@@ -1,0 +1,78 @@
+syntax = "proto3";
+
+package ai;
+
+option go_package = "proto/ai";
+
+service AiService {
+    // AI对话
+    rpc Chat(ChatRequest) returns (ChatResponse);
+    // 流式AI对话
+    rpc StreamChat(StreamChatRequest) returns (stream StreamChatResponse);
+    // 获取对话历史
+    rpc GetChatHistory(GetChatHistoryRequest) returns (GetChatHistoryResponse);
+    // 获取对话列表
+    rpc GetChatList(GetChatListRequest) returns (GetChatListResponse);
+}
+
+message ChatRequest {
+    string message = 1;
+    string conversation_id = 2;
+    string model = 3;
+}
+
+message ChatResponse {
+    string reply = 1;
+    string conversation_id = 2;
+    string model = 3;
+}
+
+message StreamChatRequest {
+    string message = 1;
+    string conversation_id = 2;
+    string model = 3;
+}
+
+message StreamChatResponse {
+    string chunk = 1;
+    string conversation_id = 2;
+    bool done = 3;
+}
+
+message GetChatHistoryRequest {
+    string conversation_id = 1;
+    int32 page = 2;
+    int32 page_size = 3;
+}
+
+message GetChatHistoryResponse {
+    repeated ChatMessage messages = 1;
+    int64 total = 2;
+}
+
+message ChatMessage {
+    string id = 1;
+    string role = 2;
+    string content = 3;
+    int64 created_at = 4;
+}
+
+message GetChatListRequest {
+    int32 page = 1;
+    int32 page_size = 2;
+}
+
+message GetChatListResponse {
+    repeated Conversation conversations = 1;
+    int64 total = 2;
+    int32 page = 3;
+    int32 page_size = 4;
+}
+
+message Conversation {
+    string id = 1;
+    string title = 2;
+    string model = 3;
+    int64 created_at = 4;
+    int64 updated_at = 5;
+}

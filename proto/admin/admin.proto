@@ -1,0 +1,79 @@
+syntax = "proto3";
+
+package admin;
+
+option go_package = "proto/admin";
+
+service AdminService {
+    // 管理员登录
+    rpc Login(AdminLoginRequest) returns (AdminLoginResponse);
+    // 管理员退出
+    rpc Logout(LogoutRequest) returns (LogoutResponse);
+    // 获取管理员信息
+    rpc GetAdminInfo(GetAdminInfoRequest) returns (GetAdminInfoResponse);
+    // 创建管理员
+    rpc CreateAdmin(CreateAdminRequest) returns (CreateAdminResponse);
+    // 获取管理员列表
+    rpc GetAdminList(GetAdminListRequest) returns (GetAdminListResponse);
+}
+
+message AdminLoginRequest {
+    string username = 1;
+    string password = 2;
+}
+
+message AdminLoginResponse {
+    string token = 1;
+    string message = 2;
+}
+
+message LogoutRequest {
+    string token = 1;
+}
+
+message LogoutResponse {
+    bool success = 1;
+    string message = 2;
+}
+
+message GetAdminInfoRequest {
+    int64 admin_id = 1;
+}
+
+message GetAdminInfoResponse {
+    int64 id = 1;
+    string username = 2;
+    string role = 3;
+    int64 created_at = 4;
+}
+
+message CreateAdminRequest {
+    string username = 1;
+    string password = 2;
+    string role = 3;
+}
+
+message CreateAdminResponse {
+    bool success = 1;
+    string message = 2;
+}
+
+message GetAdminListRequest {
+    int32 page = 1;
+    int32 page_size = 2;
+}
+
+message GetAdminListResponse {
+    repeated Admin admins = 1;
+    int64 total = 2;
+    int32 page = 3;
+    int32 page_size = 4;
+}
+
+message Admin {
+    int64 id = 1;
+    string username = 2;
+    string role = 3;
+    int64 created_at = 4;
+    int64 updated_at = 5;
+}

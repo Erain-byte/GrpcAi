@@ -1,0 +1,63 @@
+# User Service Configuration
+name: "user-service"
+host: "localhost"
+port: 8001
+grpc_port: 9001
+
+# Database Configuration
+database:
+  driver: "mysql"
+  host: "localhost"
+  port: 3306
+  username: "root"
+  password: "123456"
+  dbname: "user_db"
+  max_idle_conns: 10
+  max_open_conns: 100
+  conn_max_lifetime: 3600
+
+# Redis Configuration
+# 单节点模式：配置host+port，cluster_addresses留空
+# 集群模式：配置cluster_addresses，host+port将被忽略
+redis:
+  host: "localhost"
+  port: 6379
+  cluster_addresses:
+    # - "192.168.1.1:6379"
+    # - "192.168.1.2:6379"
+    # - "192.168.1.3:6379"
+  password: ""
+  db: 0
+  pool_size: 100
+
+# JWT Configuration
+jwt:
+  secret: "your-secret-key"
+  expire: 24h
+
+# Consul Configuration
+# 单节点模式：配置host+port，addresses留空
+# 集群模式：配置addresses，host+port将被忽略
+consul:
+  host: "localhost"
+  port: 8500
+  addresses:
+    # - "192.168.1.1:8500"
+    # - "192.168.1.2:8500"
+    # - "192.168.1.3:8500"
+  token: ""
+  scheme: "http"
+  check_interval: "10s"
+  check_timeout: "5s"
+  ttl: "30s"
+  deregister_critical_after: "90s"
+  keepalive_interval: "10s"
+
+# Logger Configuration
+logger:
+  level: "info"
+  format: "json"
+
+# Shutdown Configuration
+shutdown:
+  timeout: "5s"

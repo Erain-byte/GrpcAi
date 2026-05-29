@@ -1,0 +1,37 @@
+# Binaries
+/bin
+*.exe
+*.test
+*.out
+
+# Generated files (except proto directory)
+# proto 目录下的 .pb.go 文件需要提交，其他目录的排除
+*.pb.go
+!proto/**/*.pb.go
+*.gocovcover.out
+*.gocovreport.xml
+
+# Build artifacts
+*.a
+*.so
+*.dylib
+
+# Dependencies
+/vendor/
+/Godeps/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Python virtual environment
+ai/venv
+
+# Node modules (for adminWeb)
+node_modules/
+pnpm-lock.yaml
