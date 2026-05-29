@@ -3,7 +3,7 @@ module user
 go 1.26
 
 require (
-	github.com/Erain-byte/GrpcAi/proto v1.0.0
+	github.com/Erain-byte/GrpcAi/proto v0.0.0-20260529075920-0b563940849c
 	github.com/creasty/defaults v1.8.0
 	github.com/gin-gonic/gin v1.9.1
 	github.com/golang-jwt/jwt/v5 v5.3.1
@@ -15,8 +15,6 @@ require (
 	gorm.io/driver/mysql v1.5.2
 	gorm.io/gorm v1.25.5
 )
-
-replace github.com/Erain-byte/GrpcAi/proto => ../proto
 
 require (
 	github.com/armon/go-metrics v0.4.1 // indirect
