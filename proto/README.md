@@ -18,7 +18,7 @@ proto/
 各服务通过 Go Module 引用：
 
 ```bash
-go get github.com/yourname/proto@latest
+go get github.com/Erain-byte/GrpcAi/proto@latest
 ```
 
 ## 生成代码
@@ -38,4 +38,4 @@ bash gen.sh
 1. 修改 .proto 文件
 2. 执行 gen.sh 生成代码
 3. 提交并推送到 GitHub
-4. 各服务 `go get github.com/yourname/proto@latest` 更新依赖
+4. 各服务 `go get github.com/Erain-byte/GrpcAi/proto@latest` 更新依赖
