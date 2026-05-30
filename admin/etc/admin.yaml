@@ -1,0 +1,72 @@
+# Admin Service Configuration
+name: "admin-service"
+host: "localhost"
+port: 8002
+grpc_port: 9002
+
+# Database Configuration
+database:
+  driver: "mysql"
+  host: "localhost"
+  port: 3306
+  username: "root"
+  password: "123456"
+  dbname: "admin_db"
+  max_idle_conns: 10
+  max_open_conns: 100
+  conn_max_lifetime: 3600
+
+# Redis Configuration
+# 单节点模式：配置host+port，cluster_addresses留空
+# 集群模式：配置cluster_addresses，host+port将被忽略
+redis:
+  host: "localhost"
+  port: 6379
+  cluster_addresses: [] #集群模式时配置，单节点模式留空
+  password: ""
+  db: 0
+  pool_size: 100
+
+# JWT Configuration
+jwt:
+  secret: "g0-s3cr3t-k3y-for-jwt-t0k3n-auth3nt1c4t10n-2024"
+  expire: 24h
+
+# Consul Configuration
+# 单节点模式：配置host+port，addresses留空
+# 集群模式：配置addresses，host+port将被忽略
+consul:
+  host: "localhost"
+  port: 8500
+  addresses: [] #集群模式时配置，单节点模式留空
+  token: ""
+  scheme: "http"
+  check_interval: "10s"
+  check_timeout: "5s"
+  ttl: "30s"
+  deregister_critical_after: "90s"
+  keepalive_interval: "10s"
+
+# Logger Configuration
+logger:
+  level: "info"
+  format: "json"
+
+# Service Configuration
+service:
+  version: "1.0.0"
+  cors_enabled: true
+  tags:
+    - "http"
+    - "admin-api"
+  public_apis:
+    - "/api/v1/admin/login"
+    - "/health"
+  auth_apis:
+    - "/api/v1/admin/users"
+    - "/api/v1/admin/roles"
+  # CORS配置将从Consul服务获取，此处无需配置
+
+# Shutdown Configuration
+shutdown:
+  timeout: "5s"

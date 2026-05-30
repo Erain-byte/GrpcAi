@@ -1,0 +1,18 @@
+{
+    // Ctrl+点击跳转到定义
+    "editor.multiCursorModifier": "alt",
+    // 启用跳转到定义功能
+    "editor.definitionLinkOpensInPeek": false,
+    // 确保 Go 扩展正常工作的配置
+    "go.useLanguageServer": true,
+    // 禁用可能导致冲突的设置
+    "editor.gotoLocation.multipleDefinitions": "goto",
+    // 确保Ctrl+点击可以跳转到定义
+    "editor.contribEditorContextMenu": true,
+    // 启用快速大纲符号解析
+    "editor.quickSuggestions": {
+        "other": true,
+        "comments": false,
+        "strings": false
+    }
+}

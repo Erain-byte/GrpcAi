@@ -11,7 +11,7 @@ import (
 	"time"
 	"flag"
 	"fmt"
-	pb "github.com/yourname/proto/user"
+	pb "github.com/Erain-byte/GrpcAi/proto/user"
 	"user/internal/config"
 	"user/internal/registry"
 	"user/internal/server"
@@ -72,8 +72,26 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to create consul registry: %v", err)
 	}
-	if err := consulRegistry.Register(cfg.Name, cfg.Host, cfg.Port, cfg.GRPCPort); err != nil {
+
+	// 构建服务元数据
+	metadata := registry.BuildServiceMetadata(cfg)
+	if err := consulRegistry.Register(cfg.Name, cfg.Host, cfg.Port, cfg.GRPCPort, metadata, cfg); err != nil {
 		log.Fatalf("Failed to register service to consul: %v", err)
+	}
+
+	// 打印公开接口信息
+	publicEndpoints, err := consulRegistry.GetPublicEndpoints(cfg.Name)
+	if err != nil {
+		log.Printf("Failed to get public endpoints: %v", err)
+	} else {
+		log.Printf("Public endpoints: %v", publicEndpoints)
+	}
+
+	// 打印CORS配置信息
+	if cfg.Service.CorsEnabled {
+		log.Printf("CORS is enabled with configuration: %+v", cfg.Service.CORS)
+	} else {
+		log.Printf("CORS is disabled")
 	}
 
 	// 启动TTL心跳保活

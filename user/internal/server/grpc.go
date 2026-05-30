@@ -3,7 +3,7 @@ package server
 
 import (
 	"context"
-	pb "github.com/yourname/proto/user"
+	pb "github.com/Erain-byte/GrpcAi/proto/user"
 	"user/internal/logic"
 	"user/internal/svc"
 	"user/internal/types"

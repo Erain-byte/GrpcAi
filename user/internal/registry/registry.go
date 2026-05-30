@@ -1,8 +1,11 @@
 package registry
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
+	"strconv"
+	"strings"
 	"time"
 	"user/internal/config"
 
@@ -35,13 +38,15 @@ func NewConsulRegistry(cfg config.ConsulConfig) (*ConsulRegistry, error) {
 }
 
 // Register 注册服务到Consul，同时支持HTTP/gRPC健康检查和TTL心跳
-func (r *ConsulRegistry) Register(name string, host string, httpPort int, grpcPort int) error {
+func (r *ConsulRegistry) Register(name string, host string, httpPort int, grpcPort int, metadata map[string]string, cfg *config.Config) error {
 	// 注册HTTP服务，同时启用HTTP健康检查和TTL检查
 	httpRegistration := &api.AgentServiceRegistration{
 		ID:      fmt.Sprintf("%s-http", name),
 		Name:    name,
 		Port:    httpPort,
 		Address: host,
+		Tags:    BuildServiceTags(cfg),
+		Meta:    metadata,
 		Check: &api.AgentServiceCheck{
 			HTTP:                           fmt.Sprintf("%s://%s:%d/health", r.config.Scheme, host, httpPort),
 			Interval:                       r.config.CheckInterval,
@@ -63,6 +68,8 @@ func (r *ConsulRegistry) Register(name string, host string, httpPort int, grpcPo
 		Name:    fmt.Sprintf("%s-grpc", name),
 		Port:    grpcPort,
 		Address: host,
+		Tags:    []string{"grpc"},
+		Meta:    metadata,
 		Check: &api.AgentServiceCheck{
 			GRPC:                           fmt.Sprintf("%s:%d", host, grpcPort),
 			Interval:                       r.config.CheckInterval,
@@ -78,6 +85,62 @@ func (r *ConsulRegistry) Register(name string, host string, httpPort int, grpcPo
 	log.Printf("gRPC service registered to Consul: %s-grpc (host: %s, port: %d)", name, host, grpcPort)
 
 	return nil
+}
+
+// BuildServiceMetadata 构建服务元数据
+func BuildServiceMetadata(cfg *config.Config) map[string]string {
+	// 将API列表转换为逗号分隔的字符串
+	publicAPIs := strings.Join(cfg.Service.PublicAPIs, ",")
+	authAPIs := strings.Join(cfg.Service.AuthAPIs, ",")
+
+	// 将CORS配置转换为JSON字符串
+	corsConfig, _ := json.Marshal(cfg.Service.CORS)
+
+	return map[string]string{
+		"cors-enabled":   strconv.FormatBool(cfg.Service.CorsEnabled),
+		"public-apis":   publicAPIs,
+		"auth-required": authAPIs,
+		"service-type":  cfg.Name,
+		"version":       cfg.Service.Version,
+		"cors-config":   string(corsConfig),
+	}
+}
+
+// BuildServiceTags 构建服务标签
+func BuildServiceTags(cfg *config.Config) []string {
+	// 为HTTP服务添加标签
+	tags := make([]string, len(cfg.Service.CTags))
+	copy(tags, cfg.Service.CTags)
+
+	// 确保至少有基础标签
+	if len(tags) == 0 {
+		tags = []string{"http", "public-api"}
+	}
+
+	return tags
+}
+
+// GetPublicEndpoints 获取服务的公开接口信息
+func (r *ConsulRegistry) GetPublicEndpoints(serviceName string) ([]string, error) {
+	services, _, err := r.client.Health().Service(serviceName, "", true, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var endpoints []string
+	for _, service := range services {
+		if service.Service.Meta != nil {
+			if publicAPIs, ok := service.Service.Meta["public-apis"]; ok {
+				// 分割接口字符串
+				apiList := strings.Split(publicAPIs, ",")
+				for _, api := range apiList {
+					endpoints = append(endpoints, strings.TrimSpace(api))
+				}
+			}
+		}
+	}
+
+	return endpoints, nil
 }
 
 // KeepAlive TTL心跳保活，定期向Consul报告服务健康状态

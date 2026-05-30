@@ -1,8 +1,8 @@
-# User Service Configuration
-name: "user-service"
+# AI Service Configuration
+name: "ai-service"
 host: "localhost"
-port: 8001
-grpc_port: 9001
+port: 8003
+grpc_port: 9003
 
 # Database Configuration
 database:
@@ -11,7 +11,7 @@ database:
   port: 3306
   username: "root"
   password: "123456"
-  dbname: "user_db"
+  dbname: "ai_db"
   max_idle_conns: 10
   max_open_conns: 100
   conn_max_lifetime: 3600
@@ -56,35 +56,24 @@ logger:
 service:
   version: "1.0.0"
   cors_enabled: true
-  tags: 
+  tags:
     - "http"
-    - "public-api"
+    - "ai-api"
   public_apis:
-    - "/api/v1/user/register"
-    - "/api/v1/user/login"
+    - "/api/v1/ai/chat"
     - "/health"
   auth_apis:
-    - "/api/v1/user/list"
-  cors:
-    allow_origins:
-      - "*"
-    allow_methods:
-      - "GET"
-      - "POST"
-      - "PUT"
-      - "DELETE"
-      - "OPTIONS"
-    allow_headers:
-      - "Origin"
-      - "Content-Type"
-      - "Accept"
-      - "Authorization"
-      - "X-Requested-With"
-    expose_headers:
-      - "Content-Length"
-      - "Content-Type"
-    allow_credentials: true
-    max_age: 12
+    - "/api/v1/ai/models"
+    - "/api/v1/ai/admin"
+  # CORS配置将从Consul服务获取，此处无需配置
+
+# AI Configuration
+ai:
+  model_provider: "openai"
+  api_key: "your-openai-api-key"
+  model: "gpt-3.5-turbo"
+  max_tokens: 2048
+  temperature: 0.7
 
 # Shutdown Configuration
 shutdown:

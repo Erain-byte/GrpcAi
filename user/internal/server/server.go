@@ -12,7 +12,6 @@ func NewServer(svcCtx *svc.ServiceContext) *gin.Engine {
 	r := gin.Default()
 
 	// 中间件
-	r.Use(middleware.CORSMiddleware())
 	r.Use(middleware.Recovery())
 
 	// 初始化处理器

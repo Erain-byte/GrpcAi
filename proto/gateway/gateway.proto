@@ -1,0 +1,64 @@
+syntax = "proto3";
+
+package gateway;
+
+option go_package = "proto/gateway";
+
+// Gateway服务定义
+service Gateway {
+    // 转发请求到后端服务
+    rpc ForwardRequest(ForwardRequest) returns (ForwardResponse);
+
+    // 获取路由配置
+    rpc GetRoutes(GetRoutesRequest) returns (GetRoutesResponse);
+
+    // 健康检查
+    rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+}
+
+// 转发请求消息
+message ForwardRequest {
+    string service = 1;      // 目标服务名称
+    string path = 2;         // 请求路径
+    string method = 3;       // HTTP方法
+    string body = 4;         // 请求体
+    map<string, string> headers = 5;  // 请求头
+}
+
+// 转发响应消息
+message ForwardResponse {
+    bool success = 1;        // 是否成功
+    string message = 2;      // 响应消息
+    string data = 3;         // 响应数据
+    int32 code = 4;          // 响应状态码
+}
+
+// 获取路由配置请求
+message GetRoutesRequest {
+}
+
+// 获取路由配置响应
+message GetRoutesResponse {
+    repeated Route routes = 1;  // 路由列表
+}
+
+// 路由配置
+message Route {
+    string name = 1;        // 路由名称
+    string path = 2;         // 路由路径
+    string service = 3;      // 目标服务
+    bool strip_path = 4;     // 是否剥离路径
+    string timeout = 5;      // 超时时间
+}
+
+// 健康检查请求
+message HealthCheckRequest {
+    string service = 1;      // 可选，指定要检查的服务名称
+}
+
+// 健康检查响应
+message HealthCheckResponse {
+    bool healthy = 1;        // 服务是否健康
+    string message = 2;      // 响应消息
+    map<string, string> services = 3;  // 各服务健康状态
+}

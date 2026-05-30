@@ -38,6 +38,7 @@ generate() {
 generate "user"
 generate "admin"
 generate "ai"
+generate "gateway"
 
 echo ""
 echo "All proto files generated successfully!"

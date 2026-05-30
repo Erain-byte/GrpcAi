@@ -17,6 +17,7 @@ type Config struct {
 	JWT          JWTConfig    `yaml:"jwt"`
 	Logger       LoggerConfig `yaml:"logger"`
 	Shutdown     ShutdownConfig `yaml:"shutdown"`
+	Service      ServiceConfig `yaml:"service"`
 }
 
 type ConsulConfig struct {
@@ -83,6 +84,24 @@ type LoggerConfig struct {
 
 type ShutdownConfig struct {
 	Timeout string `yaml:"timeout" default:"5s"`
+}
+
+type ServiceConfig struct {
+	Version     string   `yaml:"version"`
+	CTags       []string `yaml:"tags"`
+	PublicAPIs  []string `yaml:"public_apis"`
+	AuthAPIs    []string `yaml:"auth_apis"`
+	CorsEnabled bool     `yaml:"cors_enabled"`
+	CORS        CORSConfig `yaml:"cors"`
+}
+
+type CORSConfig struct {
+	AllowOrigins     []string `yaml:"allow_origins"`
+	AllowMethods     []string `yaml:"allow_methods"`
+	AllowHeaders     []string `yaml:"allow_headers"`
+	ExposeHeaders    []string `yaml:"expose_headers"`
+	AllowCredentials bool     `yaml:"allow_credentials"`
+	MaxAge          int      `yaml:"max_age"`
 }
 
 func Init(configPath string) (*Config, error) {
