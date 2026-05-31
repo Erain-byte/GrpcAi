@@ -104,3 +104,12 @@ routes:
 # Shutdown Configuration
 shutdown:
   timeout: "5s"
+
+# gRPC Client Configuration
+grpc:
+  use_tls: false                    # 是否启用 TLS（生产环境建议启用）
+  insecure_skip_verify: false       # 跳过证书验证（仅用于开发/测试）
+  cert_file: ""                     # 客户端证书文件路径
+  key_file: ""                      # 客户端私钥文件路径
+  ca_file: ""                       # CA 证书文件路径
+  server_name: ""                   # TLS Server Name（可选）

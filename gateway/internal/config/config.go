@@ -20,6 +20,7 @@ type Config struct {
 	Service    ServiceConfig `yaml:"service"`
 	Routes     []RouteConfig `yaml:"routes"`
 	Shutdown   ShutdownConfig `yaml:"shutdown"`
+	Grpc       GrpcConfig    `yaml:"grpc"`
 }
 
 // DBConfig 数据库配置
@@ -121,6 +122,16 @@ type RouteConfig struct {
 // ShutdownConfig 关闭配置
 type ShutdownConfig struct {
 	Timeout string `yaml:"timeout" default:"5s"`
+}
+
+// GrpcConfig gRPC 客户端配置
+type GrpcConfig struct {
+	UseTLS             bool   `yaml:"use_tls" default:"false"`                    // 是否启用 TLS
+	InsecureSkipVerify bool   `yaml:"insecure_skip_verify" default:"false"`      // 跳过证书验证（仅用于开发/测试）
+	CertFile           string `yaml:"cert_file" default:""`                      // 客户端证书文件路径
+	KeyFile            string `yaml:"key_file" default:""`                       // 客户端私钥文件路径
+	CaFile             string `yaml:"ca_file" default:""`                        // CA 证书文件路径
+	ServerName         string `yaml:"server_name" default:""`                    // TLS Server Name（可选）
 }
 
 // Init 初始化配置

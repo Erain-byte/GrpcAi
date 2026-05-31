@@ -58,8 +58,16 @@ func main() {
 	grpcAddr := fmt.Sprintf(":%d", cfg.GRPCPort)
 	grpcSrv := grpc.NewServer()
 	
-	// 创建客户端管理器
-	grpcClients := grpcClient.NewClientManager(consulRegistry)
+	// 创建客户端管理器（带 TLS 配置）
+	grpcConfig := &grpcClient.GrpcConfig{
+		UseTLS:             cfg.Grpc.UseTLS,
+		InsecureSkipVerify: cfg.Grpc.InsecureSkipVerify,
+		CertFile:           cfg.Grpc.CertFile,
+		KeyFile:            cfg.Grpc.KeyFile,
+		CaFile:             cfg.Grpc.CaFile,
+		ServerName:         cfg.Grpc.ServerName,
+	}
+	grpcClients := grpcClient.NewClientManager(consulRegistry, grpcConfig)
 	serviceContext.GrpcClients = grpcClients
 	
 	// 注册所有 gRPC 服务
