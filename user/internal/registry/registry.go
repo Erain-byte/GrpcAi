@@ -1,10 +1,8 @@
 package registry
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
-	"strconv"
 	"strings"
 	"time"
 	"user/internal/config"
@@ -93,16 +91,11 @@ func BuildServiceMetadata(cfg *config.Config) map[string]string {
 	publicAPIs := strings.Join(cfg.Service.PublicAPIs, ",")
 	authAPIs := strings.Join(cfg.Service.AuthAPIs, ",")
 
-	// 将CORS配置转换为JSON字符串
-	corsConfig, _ := json.Marshal(cfg.Service.CORS)
-
 	return map[string]string{
-		"cors-enabled":   strconv.FormatBool(cfg.Service.CorsEnabled),
 		"public-apis":   publicAPIs,
 		"auth-required": authAPIs,
 		"service-type":  cfg.Name,
 		"version":       cfg.Service.Version,
-		"cors-config":   string(corsConfig),
 	}
 }
 
@@ -193,4 +186,3 @@ func (r *ConsulRegistry) Deregister(name string) error {
 
 	return nil
 }
-
