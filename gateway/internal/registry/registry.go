@@ -5,6 +5,7 @@ import (
 	"gateway/internal/config"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/hashicorp/consul/api"
@@ -13,6 +14,17 @@ import (
 type ConsulRegistry struct {
 	client *api.Client
 	config config.ConsulConfig
+	
+	// 服务发现缓存
+	cacheMu      sync.RWMutex
+	serviceCache map[string]*serviceCacheEntry
+}
+
+// serviceCacheEntry 服务缓存条目
+type serviceCacheEntry struct {
+	entries   []*api.ServiceEntry
+	lastIndex uint64
+	updatedAt time.Time
 }
 
 func NewConsulRegistry(cfg config.ConsulConfig) (*ConsulRegistry, error) {
@@ -30,8 +42,9 @@ func NewConsulRegistry(cfg config.ConsulConfig) (*ConsulRegistry, error) {
 	}
 
 	return &ConsulRegistry{
-		client: client,
-		config: cfg,
+		client:       client,
+		config:       cfg,
+		serviceCache: make(map[string]*serviceCacheEntry),
 	}, nil
 }
 
@@ -110,18 +123,97 @@ func BuildServiceTags(cfg *config.Config) []string {
 	return tags
 }
 
-// DiscoverService 从Consul发现服务实例
+// DiscoverService 从Consul发现服务实例（带缓存和Watch机制）
 func (r *ConsulRegistry) DiscoverService(serviceName string) ([]*api.ServiceEntry, error) {
-	services, _, err := r.client.Health().Service(serviceName, "", true, nil)
+	// 先尝试从缓存读取
+	if entries := r.getFromCache(serviceName); entries != nil {
+		return entries, nil
+	}
+
+	// 缓存未命中，从 Consul 查询并启动 Watch
+	entries, lastIndex, err := r.queryConsul(serviceName, 0)
 	if err != nil {
-		return nil, fmt.Errorf("failed to discover service %s: %v", serviceName, err)
+		return nil, err
+	}
+
+	// 更新缓存
+	r.updateCache(serviceName, entries, lastIndex)
+
+	// 启动后台 Watch（协程）
+	go r.watchService(serviceName, lastIndex)
+
+	return entries, nil
+}
+
+// getFromCache 从缓存获取服务实例
+func (r *ConsulRegistry) getFromCache(serviceName string) []*api.ServiceEntry {
+	r.cacheMu.RLock()
+	defer r.cacheMu.RUnlock()
+
+	entry, ok := r.serviceCache[serviceName]
+	if !ok {
+		return nil
+	}
+
+	// 检查缓存是否过期（30秒）
+	if time.Since(entry.updatedAt) > 30*time.Second {
+		return nil
+	}
+
+	return entry.entries
+}
+
+// updateCache 更新服务缓存
+func (r *ConsulRegistry) updateCache(serviceName string, entries []*api.ServiceEntry, lastIndex uint64) {
+	r.cacheMu.Lock()
+	defer r.cacheMu.Unlock()
+
+	r.serviceCache[serviceName] = &serviceCacheEntry{
+		entries:   entries,
+		lastIndex: lastIndex,
+		updatedAt: time.Now(),
+	}
+}
+
+// queryConsul 查询 Consul 服务
+func (r *ConsulRegistry) queryConsul(serviceName string, waitIndex uint64) ([]*api.ServiceEntry, uint64, error) {
+	opts := &api.QueryOptions{
+		WaitIndex: waitIndex,
+		WaitTime:  30 * time.Second, // Blocking Query 超时时间
+	}
+
+	services, meta, err := r.client.Health().Service(serviceName, "", true, opts)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to discover service %s: %v", serviceName, err)
 	}
 
 	if len(services) == 0 {
-		return nil, fmt.Errorf("no healthy instances found for service: %s", serviceName)
+		return nil, 0, fmt.Errorf("no healthy instances found for service: %s", serviceName)
 	}
 
-	return services, nil
+	return services, meta.LastIndex, nil
+}
+
+// watchService 后台监听服务变化
+func (r *ConsulRegistry) watchService(serviceName string, lastIndex uint64) {
+	for {
+		entries, newIndex, err := r.queryConsul(serviceName, lastIndex)
+		if err != nil {
+			log.Printf("Watch service %s failed: %v, retry in 5s", serviceName, err)
+			time.Sleep(5 * time.Second)
+			continue
+		}
+
+		// 只有索引变化时才更新缓存
+		if newIndex > lastIndex {
+			r.updateCache(serviceName, entries, newIndex)
+			lastIndex = newIndex
+			log.Printf("Service %s updated: %d instances", serviceName, len(entries))
+		}
+
+		// 如果索引没变，queryConsul 会阻塞等待变化或超时
+		// 超时后继续下一轮循环
+	}
 }
 
 // GetServiceMetadata 获取服务的元数据（公开接口、CORS配置等）
