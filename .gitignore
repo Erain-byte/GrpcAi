@@ -63,6 +63,9 @@ Thumbs.db
 .vscode/
 *.code-workspace
 
+# Kilo (AI 辅助工具)
+.kilo/
+
 # GoLand
 .idea/
 *.iml
