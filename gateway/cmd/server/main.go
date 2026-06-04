@@ -12,32 +12,55 @@ import (
 	"syscall"
 	"time"
 
-	"google.golang.org/grpc"
-
 	"gateway/internal/config"
 	grpcClient "gateway/internal/grpc"
+	"gateway/internal/logger"
+	"gateway/internal/middleware"
 	"gateway/internal/registry"
 	"gateway/internal/server"
 	"gateway/internal/svc"
+	"gateway/internal/tracer"
+	_ "net/http/pprof" // 引入 pprof 支持
+
+	"google.golang.org/grpc"
 )
 
 func main() {
 	var configFile string
-	flag.StringVar(&configFile, "f", "etc/gateway.yaml", "config file path")
-	flag.Parse()
+	flag.StringVar(&configFile, "f", "etc/gateway.yaml", "config file path") // 默认配置文件路径
+	flag.Parse()                                                             // 解析命令行参数
 
 	cfg, err := config.Init(configFile)
 	if err != nil {
 		log.Fatalf("Failed to initialize config: %v", err)
 	}
 
-	serviceContext := svc.NewServiceContext(*cfg)
-
-	consulRegistry, err := registry.NewConsulRegistry(cfg.Consul)
-	if err != nil {
-		log.Fatalf("Failed to create consul registry: %v", err)
+	// ⭐ 初始化日志系统
+	if err := logger.InitLogger(cfg.Logger); err != nil {
+		log.Fatalf("Failed to initialize logger: %v", err)
 	}
-	serviceContext.Registry = consulRegistry
+	defer logger.Sync() // 确保日志缓冲区写入磁盘
+
+	// ⭐ 初始化链路追踪系统
+	if err := tracer.InitTracer(cfg.Tracing); err != nil {
+		logger.SugaredLogger.Warnf("Failed to initialize tracer: %v", err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := tracer.Shutdown(ctx); err != nil {
+			logger.SugaredLogger.Warnf("Failed to shutdown tracer: %v", err)
+		}
+		cancel() // 立即释放 context 资源
+	}()
+
+	logger.SugaredLogger.Infof("Gateway Service starting... [version=%s]", cfg.Service.Version)
+
+	serviceContext := svc.NewServiceContext(*cfg)                 // 创建 redis 和数据库连接等资源
+	consulRegistry, err := registry.NewConsulRegistry(cfg.Consul) // 创建 Consul 注册中心实例
+	if err != nil {
+		logger.SugaredLogger.Fatalf("Failed to create consul registry: %v", err)
+	}
+	serviceContext.Registry = consulRegistry // 将 Consul 注册中心添加到服务上下文中，供后续使用
 
 	// ========== HTTP服务 ==========
 	engine := server.NewServer(serviceContext)
@@ -47,17 +70,14 @@ func main() {
 		Handler: engine.GetEngine(),
 	}
 
-	go func() {
-		log.Printf("Gateway HTTP Server starting at %s...", httpAddr)
-		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Failed to start HTTP server: %v", err)
-		}
-	}()
+	go startHTTPServer(httpSrv, httpAddr)
 
 	// ========== gRPC服务 ==========
 	grpcAddr := fmt.Sprintf(":%d", cfg.GRPCPort)
-	grpcSrv := grpc.NewServer()
-	
+	grpcSrv := grpc.NewServer(
+		grpc.UnaryInterceptor(middleware.UnaryServerInterceptor()), // ⭐ 添加服务端追踪拦截器
+	)
+
 	// 创建客户端管理器（带 TLS 配置）
 	grpcConfig := &grpcClient.GrpcConfig{
 		UseTLS:             cfg.Grpc.UseTLS,
@@ -69,46 +89,62 @@ func main() {
 	}
 	grpcClients := grpcClient.NewClientManager(consulRegistry, grpcConfig)
 	serviceContext.GrpcClients = grpcClients
-	
+
 	// 注册所有 gRPC 服务
 	server.RegisterAllGRPCServices(grpcSrv, serviceContext, grpcClients)
 
 	grpcListener, err := net.Listen("tcp", grpcAddr)
 	if err != nil {
-		log.Fatalf("Failed to listen gRPC: %v", err)
+		logger.SugaredLogger.Fatalf("Failed to listen gRPC: %v", err)
 	}
 
-	go func() {
-		log.Printf("Gateway gRPC Server starting at %s...", grpcAddr)
-		if err := grpcSrv.Serve(grpcListener); err != nil {
-			log.Fatalf("Failed to start gRPC server: %v", err)
-		}
-	}()
+	go startGRPCServer(grpcSrv, grpcListener, grpcAddr)
 
 	// ========== Consul注册 ==========
 	metadata := registry.BuildServiceMetadata(cfg)
 	if err := consulRegistry.Register(cfg.Name, cfg.Host, cfg.Port, cfg.GRPCPort, metadata, cfg); err != nil {
-		log.Fatalf("Failed to register service to consul: %v", err)
+		logger.SugaredLogger.Fatalf("Failed to register service to consul: %v", err)
 	}
 
-	log.Printf("Routes configured: %d", len(cfg.Routes))
+	logger.SugaredLogger.Infof("Routes configured: %d", len(cfg.Routes))
 	for _, route := range cfg.Routes {
-		log.Printf("  - %s -> %s (strip_path: %v, timeout: %s)", route.Path, route.Service, route.StripPath, route.Timeout)
+		logger.SugaredLogger.Infof("  - %s -> %s (strip_path: %v, timeout: %s)", route.Path, route.Service, route.StripPath, route.Timeout)
 	}
 
 	stopKeepAlive := make(chan struct{})
 	go consulRegistry.KeepAlive(cfg.Name, stopKeepAlive)
 
+	// ⭐ 启动证书有效期定期检查（每24小时）
+	if cfg.Grpc.UseTLS {
+		quitCheck := make(chan struct{})
+		go func() {
+			ticker := time.NewTicker(24 * time.Hour)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					if err := grpcClients.CheckCertificateExpiry(); err != nil {
+						logger.SugaredLogger.Warnf("Certificate health check failed: %v", err)
+					}
+				case <-quitCheck:
+					return
+				}
+			}
+		}()
+		logger.SugaredLogger.Info("Certificate expiry health check started (every 24 hours)")
+		defer close(quitCheck)
+	}
+
 	// ========== 优雅关闭 ==========
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
-	log.Println("Shutting down gateway...")
+	logger.SugaredLogger.Info("Shutting down gateway...")
 
 	close(stopKeepAlive)
 
 	if err := consulRegistry.Deregister(cfg.Name); err != nil {
-		log.Printf("Failed to deregister service from consul: %v", err)
+		logger.SugaredLogger.Warnf("Failed to deregister service from consul: %v", err)
 	}
 
 	grpcSrv.GracefulStop()
@@ -121,8 +157,24 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	if err := httpSrv.Shutdown(ctx); err != nil {
-		log.Printf("HTTP Server forced to shutdown: %v", err)
+		logger.SugaredLogger.Warnf("HTTP Server forced to shutdown: %v", err)
 	}
 
-	log.Println("Gateway exited")
+	logger.SugaredLogger.Info("Gateway exited")
+}
+
+// startHTTPServer 启动 HTTP 服务器（在 goroutine 中运行）
+func startHTTPServer(srv *http.Server, addr string) {
+	logger.SugaredLogger.Infof("Gateway HTTP Server starting at %s...", addr)
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		logger.SugaredLogger.Fatalf("Failed to start HTTP server: %v", err)
+	}
+}
+
+// startGRPCServer 启动 gRPC 服务器（在 goroutine 中运行）
+func startGRPCServer(srv *grpc.Server, listener net.Listener, addr string) {
+	logger.SugaredLogger.Infof("Gateway gRPC Server starting at %s...", addr)
+	if err := srv.Serve(listener); err != nil {
+		logger.SugaredLogger.Fatalf("Failed to start gRPC server: %v", err)
+	}
 }

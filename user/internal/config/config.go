@@ -18,6 +18,7 @@ type Config struct {
 	Logger       LoggerConfig `yaml:"logger"`
 	Shutdown     ShutdownConfig `yaml:"shutdown"`
 	Service      ServiceConfig `yaml:"service"`
+	Grpc         GrpcConfig   `yaml:"grpc"`               // gRPC TLS/mTLS 配置
 }
 
 type ConsulConfig struct {
@@ -102,6 +103,18 @@ type CORSConfig struct {
 	ExposeHeaders    []string `yaml:"expose_headers"`
 	AllowCredentials bool     `yaml:"allow_credentials"`
 	MaxAge          int      `yaml:"max_age"`
+}
+
+// GrpcConfig gRPC TLS/mTLS 配置（仅用于未来扩展）
+// 注意：User 服务当前仅作为 gRPC 服务端，此配置暂未使用
+// 如需在服务端启用 TLS，请在 grpc.go 中加载证书并创建 grpc.Credentials
+type GrpcConfig struct {
+	UseTLS             bool   `yaml:"use_tls" default:"false"`                    // 是否启用 TLS
+	InsecureSkipVerify bool   `yaml:"insecure_skip_verify" default:"false"`       // 跳过证书验证
+	CertFile           string `yaml:"cert_file" default:""`                       // 服务端证书路径
+	KeyFile            string `yaml:"key_file" default:""`                        // 服务端私钥路径
+	CaFile             string `yaml:"ca_file" default:""`                         // CA 证书路径
+	ServerName         string `yaml:"server_name" default:"user-service"`         // TLS Server Name
 }
 
 func Init(configPath string) (*Config, error) {

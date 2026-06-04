@@ -121,10 +121,10 @@ func main() {
 		shutdownTimeout = 5 * time.Second
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
-	defer cancel()
 	if err := httpSrv.Shutdown(ctx); err != nil {
 		log.Printf("HTTP Server forced to shutdown: %v", err)
 	}
+	cancel() // 立即释放 context 资源
 
 	// 优雅关闭gRPC服务器
 	grpcSrv.GracefulStop()

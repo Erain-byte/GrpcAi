@@ -2,11 +2,16 @@ package grpc
 
 import (
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
+	"gateway/internal/logger"
+	"gateway/internal/middleware"
 	"gateway/internal/registry"
 	"log"
+	"os"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	pbAdmin "github.com/Erain-byte/GrpcAi/proto/admin"
 	pbAi "github.com/Erain-byte/GrpcAi/proto/ai"
@@ -43,6 +48,22 @@ func NewClientManager(reg *registry.ConsulRegistry, config *GrpcConfig) *ClientM
 			UseTLS: false,
 		}
 	}
+
+	// ⭐ 证书自动推导机制：当证书路径未明确指定时，根据服务名自动推导
+	if config.UseTLS && config.CertFile == "" && config.KeyFile == "" {
+		logger.SugaredLogger.Warn("TLS enabled but certificate paths not specified, using default paths")
+		// 默认证书路径：/etc/certs/{service-name}/
+		defaultCertDir := "/etc/certs/gateway"
+		config.CertFile = fmt.Sprintf("%s/client.crt", defaultCertDir)
+		config.KeyFile = fmt.Sprintf("%s/client.key", defaultCertDir)
+		if config.CaFile == "" {
+			config.CaFile = fmt.Sprintf("%s/ca.crt", defaultCertDir)
+		}
+		if config.ServerName == "" {
+			config.ServerName = "gateway-service"
+		}
+	}
+
 	return &ClientManager{
 		registry: reg,
 		config:   config,
@@ -84,13 +105,14 @@ func (m *ClientManager) GetConn(serviceName string) (*grpc.ClientConn, error) {
 
 	conn, err = grpc.NewClient(addr,
 		grpc.WithTransportCredentials(creds),
+		grpc.WithUnaryInterceptor(middleware.UnaryClientInterceptor()), // ⭐ 添加客户端追踪拦截器
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect gRPC service %s (%s): %v", serviceName, addr, err)
 	}
 
 	m.conns[key] = conn
-	log.Printf("gRPC connection established: %s -> %s (TLS: %v)", serviceName, addr, m.config.UseTLS)
+	logger.SugaredLogger.Infof("gRPC connection established: %s -> %s (TLS: %v)", serviceName, addr, m.config.UseTLS)
 	return conn, nil
 }
 
@@ -116,14 +138,24 @@ func (m *ClientManager) createTransportCredentials() (credentials.TransportCrede
 		}
 
 		if m.config.InsecureSkipVerify {
-			log.Println("WARNING: TLS certificate verification is disabled")
+			logger.SugaredLogger.Warn("TLS certificate verification is disabled")
 			tlsConfig.InsecureSkipVerify = true
 		}
 
 		if m.config.CaFile != "" {
 			// 加载自定义 CA 证书
-			// 注意：这里需要实现 CA 证书加载逻辑
-			log.Printf("Using custom CA certificate: %s", m.config.CaFile)
+			caCert, err := os.ReadFile(m.config.CaFile)
+			if err != nil {
+				return nil, fmt.Errorf("failed to read CA certificate: %v", err)
+			}
+
+			caCertPool := x509.NewCertPool()
+			if !caCertPool.AppendCertsFromPEM(caCert) {
+				return nil, fmt.Errorf("failed to parse CA certificate")
+			}
+
+			tlsConfig.RootCAs = caCertPool
+			logger.SugaredLogger.Infof("Loaded custom CA certificate: %s", m.config.CaFile)
 		}
 
 		return credentials.NewTLS(tlsConfig), nil
@@ -135,11 +167,62 @@ func (m *ClientManager) createTransportCredentials() (credentials.TransportCrede
 	}
 
 	if m.config.InsecureSkipVerify {
-		log.Println("WARNING: TLS certificate verification is disabled")
+		logger.SugaredLogger.Warn("TLS certificate verification is disabled")
 		tlsConfig.InsecureSkipVerify = true
 	}
 
+	if m.config.CaFile != "" {
+		// 加载自定义 CA 证书
+		caCert, err := os.ReadFile(m.config.CaFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read CA certificate: %v", err)
+		}
+
+		caCertPool := x509.NewCertPool()
+		if !caCertPool.AppendCertsFromPEM(caCert) {
+			return nil, fmt.Errorf("failed to parse CA certificate")
+		}
+
+		tlsConfig.RootCAs = caCertPool
+		logger.SugaredLogger.Infof("Loaded custom CA certificate: %s", m.config.CaFile)
+	}
+
 	return credentials.NewTLS(tlsConfig), nil
+}
+
+// CheckCertificateExpiry 检查证书有效期（健康检查）
+func (m *ClientManager) CheckCertificateExpiry() error {
+	if !m.config.UseTLS {
+		return nil // 未启用 TLS，无需检查
+	}
+
+	if m.config.CertFile == "" {
+		return nil // 单向 TLS，无客户端证书
+	}
+
+	// 读取客户端证书
+	cert, err := tls.LoadX509KeyPair(m.config.CertFile, m.config.KeyFile)
+	if err != nil {
+		return fmt.Errorf("failed to load certificate: %v", err)
+	}
+
+	// 解析证书
+	x509Cert, err := x509.ParseCertificate(cert.Certificate[0])
+	if err != nil {
+		return fmt.Errorf("failed to parse certificate: %v", err)
+	}
+
+	// 检查有效期
+	now := time.Now()
+	daysUntilExpiry := x509Cert.NotAfter.Sub(now).Hours() / 24
+
+	if daysUntilExpiry < 7 {
+		logger.SugaredLogger.Warnf("Certificate expiring soon: %.1f days remaining", daysUntilExpiry)
+		return fmt.Errorf("certificate expiring in %.1f days", daysUntilExpiry)
+	}
+
+	logger.SugaredLogger.Debugf("Certificate valid for %.1f days", daysUntilExpiry)
+	return nil
 }
 
 // resolveService 从 Consul 解析服务地址（Round-Robin 负载均衡）

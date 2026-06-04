@@ -28,11 +28,15 @@ func NewServer(svcCtx *svc.ServiceContext) *Server {
 	gin.SetMode(gin.ReleaseMode)
 	engine := gin.New()
 
-	// 注册中间件
-	engine.Use(middleware.Recovery())
-	engine.Use(middleware.Logger())
-	engine.Use(middleware.CORS(svcCtx.Config.Service.CORS))
-	engine.Use(middleware.JWTAuth(svcCtx.Config.JWT, svcCtx.Config.Service.PublicAPIs))
+	// 注册中间件（顺序很重要！）
+	engine.Use(middleware.Recovery())                              // 1. 异常恢复
+	engine.Use(middleware.TracingMiddleware())                     // 2. ⭐ 链路追踪（在日志之前，记录完整请求链）
+	engine.Use(middleware.LoggerMiddleware())                      // 3. 结构化日志记录
+	engine.Use(middleware.CORS(svcCtx.Config.Service.CORS))       // 4. CORS 跨域
+	engine.Use(middleware.AntiReplayMiddleware(svcCtx.Config.AntiReplay)) // 5. 防重放（在限流之前）
+	engine.Use(middleware.RateLimitMiddleware(svcCtx.Config.RateLimit)) // 6. 限流（在 JWT 之前，防止未认证请求消耗资源）
+	engine.Use(middleware.JWTAuth(svcCtx.Config.JWT, svcCtx.Config.Service.PublicAPIs)) // 7. JWT 认证
+	engine.Use(middleware.CircuitBreakerMiddleware(svcCtx.Config.CircuitBreaker)) // 8. 熔断（在 JWT 之后，保护后端服务）
 
 	server := &Server{
 		engine: engine,

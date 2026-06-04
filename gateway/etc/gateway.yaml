@@ -49,8 +49,13 @@ consul:
 
 # Logger Configuration
 logger:
-  level: "info"
-  format: "json"
+  level: "info"                     # 日志级别：debug, info, warn, error
+  format: "json"                    # 日志格式：json, console
+  filename: "logs/gateway.log"      # 日志文件路径
+  max_size: 100                     # 单个日志文件最大大小（MB）
+  max_backups: 10                   # 保留的旧日志文件数量
+  max_age: 30                       # 日志文件保留天数
+  compress: true                    # 是否压缩旧日志文件
 
 # Service Configuration
 service:
@@ -109,7 +114,38 @@ shutdown:
 grpc:
   use_tls: false                    # 是否启用 TLS（生产环境建议启用）
   insecure_skip_verify: false       # 跳过证书验证（仅用于开发/测试）
-  cert_file: ""                     # 客户端证书文件路径
-  key_file: ""                      # 客户端私钥文件路径
-  ca_file: ""                       # CA 证书文件路径
-  server_name: ""                   # TLS Server Name（可选）
+  cert_file: ""                     # 客户端证书文件路径（默认：/etc/certs/gateway/client.crt）
+  key_file: ""                      # 客户端私钥文件路径（默认：/etc/certs/gateway/client.key）
+  ca_file: ""                       # CA 证书文件路径（默认：/etc/certs/gateway/ca.crt）
+  server_name: "gateway-service"    # TLS Server Name（用于证书验证）
+
+# Rate Limit Configuration (限流配置)
+rate_limit:
+  enabled: true                     # 是否启用限流
+  requests_per_second: 100          # 每秒允许的请求数
+  burst_size: 20                    # 令牌桶容量（允许突发流量）
+  by_ip: true                       # 按 IP 限流
+  by_api: false                     # 按 API 路径限流
+
+# Circuit Breaker Configuration (熔断配置)
+circuit_breaker:
+  enabled: true                     # 是否启用熔断
+  max_failures: 5                   # 最大连续失败次数
+  timeout: "30s"                    # 熔断器打开后的恢复等待时间
+  min_requests: 10                  # 半开状态下的最小请求数
+  interval: "60s"                   # 统计窗口时间
+
+# Tracing Configuration (链路追踪配置)
+tracing:
+  enabled: true                     # 是否启用链路追踪
+  service_name: "gateway-service"   # 服务名称
+  endpoint: "http://localhost:14268/api/traces"  # Jaeger Collector 地址
+  sampler_type: "const"             # 采样器类型：const, probabilistic, ratelimiting
+  sampler_param: 1.0                # 采样参数（const: 0/1, probabilistic: 0.0-1.0）
+
+# Anti-Replay Configuration (防重放配置)
+anti_replay:
+  enabled: false                    # 是否启用防重放（开发环境建议关闭，生产环境启用）
+  timestamp_tolerance: 300          # 时间戳容差（秒），默认5分钟
+  nonce_cache_size: 10000           # Nonce 缓存大小
+  nonce_expire_time: 600            # Nonce 过期时间（秒），默认10分钟
