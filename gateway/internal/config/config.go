@@ -2,6 +2,8 @@ package config
 
 import (
 	"fmt"
+	"os"
+	"strings"
 
 	"github.com/creasty/defaults"
 	"github.com/spf13/viper"
@@ -9,23 +11,24 @@ import (
 
 // Config 网关服务总配置结构
 type Config struct {
-	Name         string            `yaml:"name" default:"gateway-service"`
-	Host         string            `yaml:"host" default:"localhost"`
-	Port         int               `yaml:"port" default:"8080"`
-	GRPCPort     int               `yaml:"grpc_port" default:"9080"`
-	Database     DBConfig          `yaml:"database"`
-	Redis        RedisConfig       `yaml:"redis"`
-	JWT          JWTConfig         `yaml:"jwt"`
-	Consul       ConsulConfig      `yaml:"consul"`
-	Logger       LoggerConfig      `yaml:"logger"`
-	Service      ServiceConfig     `yaml:"service"`
-	Routes       []RouteConfig     `yaml:"routes"`
-	Shutdown     ShutdownConfig    `yaml:"shutdown"`
-	Grpc         GrpcConfig        `yaml:"grpc"`
-	RateLimit    RateLimitConfig   `yaml:"rate_limit"`           // 限流配置
+	Environment    string               `yaml:"environment" default:"development"`
+	Name           string               `yaml:"name" default:"gateway-service"`
+	Host           string               `yaml:"host" default:"localhost"`
+	Port           int                  `yaml:"port" default:"8080"`
+	GRPCPort       int                  `yaml:"grpc_port" default:"9080"`
+	Database       DBConfig             `yaml:"database"`
+	Redis          RedisConfig          `yaml:"redis"`
+	JWT            JWTConfig            `yaml:"jwt"`
+	Consul         ConsulConfig         `yaml:"consul"`
+	Logger         LoggerConfig         `yaml:"logger"`
+	Service        ServiceConfig        `yaml:"service"`
+	Routes         []RouteConfig        `yaml:"routes"`
+	Shutdown       ShutdownConfig       `yaml:"shutdown"`
+	Grpc           GrpcConfig           `yaml:"grpc"`
+	RateLimit      RateLimitConfig      `yaml:"rate_limit"`      // 限流配置
 	CircuitBreaker CircuitBreakerConfig `yaml:"circuit_breaker"` // 熔断配置
-	Tracing      TracingConfig     `yaml:"tracing"`              // 链路追踪配置
-	AntiReplay   AntiReplayConfig  `yaml:"anti_replay"`          // 防重放配置
+	Tracing        TracingConfig        `yaml:"tracing"`         // 链路追踪配置
+	AntiReplay     AntiReplayConfig     `yaml:"anti_replay"`     // 防重放配置
 }
 
 // DBConfig 数据库配置
@@ -49,6 +52,15 @@ type RedisConfig struct {
 	Password         string   `yaml:"password" default:""`
 	DB               int      `yaml:"db" default:"0"`
 	PoolSize         int      `yaml:"pool_size" default:"100"`
+	MinIdleConns     int      `yaml:"min_idle_conns" default:"10"`
+	MaxIdleConns     int      `yaml:"max_idle_conns" default:"50"`
+	ConnMaxIdleTime  string   `yaml:"conn_max_idle_time" default:"30m"`
+	ConnMaxLifetime  string   `yaml:"conn_max_lifetime" default:"1h"`
+	DialTimeout      string   `yaml:"dial_timeout" default:"5s"`
+	ReadTimeout      string   `yaml:"read_timeout" default:"3s"`
+	WriteTimeout     string   `yaml:"write_timeout" default:"3s"`
+	PoolTimeout      string   `yaml:"pool_timeout" default:"4s"`
+	HealthRequired   bool     `yaml:"health_required" default:"false"`
 }
 
 // IsCluster 是否集群模式
@@ -59,6 +71,11 @@ func (r *RedisConfig) IsCluster() bool {
 // GetAddr 获取单节点地址
 func (r *RedisConfig) GetAddr() string {
 	return fmt.Sprintf("%s:%d", r.Host, r.Port)
+}
+
+func (c *Config) IsProduction() bool {
+	env := strings.ToLower(strings.TrimSpace(c.Environment))
+	return env == "prod" || env == "production"
 }
 
 // JWTConfig JWT配置
@@ -91,13 +108,13 @@ func (c *ConsulConfig) GetAddresses() []string {
 
 // LoggerConfig 日志配置
 type LoggerConfig struct {
-	Level      string `yaml:"level" default:"info"`              // 日志级别：debug, info, warn, error
-	Format     string `yaml:"format" default:"json"`             // 日志格式：json, console
+	Level      string `yaml:"level" default:"info"`                // 日志级别：debug, info, warn, error
+	Format     string `yaml:"format" default:"json"`               // 日志格式：json, console
 	Filename   string `yaml:"filename" default:"logs/gateway.log"` // 日志文件路径
-	MaxSize    int    `yaml:"max_size" default:"100"`            // 单个日志文件最大大小（MB）
-	MaxBackups int    `yaml:"max_backups" default:"10"`          // 保留的旧日志文件数量
-	MaxAge     int    `yaml:"max_age" default:"30"`              // 日志文件保留天数
-	Compress   bool   `yaml:"compress" default:"true"`           // 是否压缩旧日志文件
+	MaxSize    int    `yaml:"max_size" default:"100"`              // 单个日志文件最大大小（MB）
+	MaxBackups int    `yaml:"max_backups" default:"10"`            // 保留的旧日志文件数量
+	MaxAge     int    `yaml:"max_age" default:"30"`                // 日志文件保留天数
+	Compress   bool   `yaml:"compress" default:"true"`             // 是否压缩旧日志文件
 }
 
 // ServiceConfig 服务配置
@@ -146,37 +163,45 @@ type GrpcConfig struct {
 
 // RateLimitConfig 限流配置
 type RateLimitConfig struct {
-	Enabled         bool    `yaml:"enabled" default:"false"`                // 是否启用限流
-	RequestsPerSecond float64 `yaml:"requests_per_second" default:"100"`   // 每秒请求数
-	BurstSize       int     `yaml:"burst_size" default:"20"`               // 令牌桶容量（突发流量）
-	ByIP            bool    `yaml:"by_ip" default:"true"`                  // 是否按 IP 限流
-	ByAPI           bool    `yaml:"by_api" default:"false"`                // 是否按 API 路径限流
+	Enabled           bool    `yaml:"enabled" default:"false"`           // 是否启用限流
+	RequestsPerSecond float64 `yaml:"requests_per_second" default:"100"` // 每秒请求数
+	BurstSize         int     `yaml:"burst_size" default:"20"`           // 令牌桶容量（突发流量）
+	ByIP              bool    `yaml:"by_ip" default:"true"`              // 是否按 IP 限流
+	ByAPI             bool    `yaml:"by_api" default:"false"`            // 是否按 API 路径限流
+	FallbackToLocal   bool    `yaml:"fallback_to_local" default:"true"`  // Redis unavailable fallback, disable in production.
 }
 
 // CircuitBreakerConfig 熔断器配置
 type CircuitBreakerConfig struct {
-	Enabled      bool   `yaml:"enabled" default:"false"`                   // 是否启用熔断
-	MaxFailures  uint32 `yaml:"max_failures" default:"5"`                  // 最大失败次数
-	Timeout      string `yaml:"timeout" default:"30s"`                     // 熔断器打开后的恢复等待时间
-	MinRequests  uint32 `yaml:"min_requests" default:"10"`                 // 半开状态下的最小请求数
-	Interval     string `yaml:"interval" default:"60s"`                    // 统计窗口时间
+	Enabled     bool   `yaml:"enabled" default:"false"`   // 是否启用熔断
+	MaxFailures uint32 `yaml:"max_failures" default:"5"`  // 最大失败次数
+	Timeout     string `yaml:"timeout" default:"30s"`     // 熔断器打开后的恢复等待时间
+	MinRequests uint32 `yaml:"min_requests" default:"10"` // 半开状态下的最小请求数
+	Interval    string `yaml:"interval" default:"60s"`    // 统计窗口时间
 }
 
 // TracingConfig 链路追踪配置
 type TracingConfig struct {
-	Enabled     bool    `yaml:"enabled" default:"false"`                   // 是否启用链路追踪
-	ServiceName string  `yaml:"service_name" default:"gateway-service"`    // 服务名称
-	Endpoint    string  `yaml:"endpoint" default:"http://localhost:14268/api/traces"` // Jaeger Collector 地址
-	SamplerType string  `yaml:"sampler_type" default:"const"`              // 采样器类型：const, probabilistic, ratelimiting
-	SamplerParam float64 `yaml:"sampler_param" default:"1.0"`              // 采样参数（const: 0/1, probabilistic: 0.0-1.0）
+	Enabled      bool    `yaml:"enabled" default:"false"`                // 是否启用链路追踪
+	ServiceName  string  `yaml:"service_name" default:"gateway-service"` // 服务名称
+	Endpoint     string  `yaml:"endpoint" default:"localhost:4317"`      // OTLP gRPC Collector 地址（标准端口 4317）
+	SamplerType  string  `yaml:"sampler_type" default:"const"`           // 采样器类型：const, probabilistic, ratelimiting
+	SamplerParam float64 `yaml:"sampler_param" default:"1.0"`            // 采样参数（const: 0/1, probabilistic: 0.0-1.0）
+	UseTLS       bool    `yaml:"use_tls" default:"false"`                // 是否启用 TLS（生产环境建议启用）
+	CaFile       string  `yaml:"ca_file" default:""`                     // CA 证书文件路径（默认：/etc/certs/gateway/ca.crt）
+	CertFile     string  `yaml:"cert_file" default:""`                   // 客户端证书文件路径（双向认证时使用）
+	KeyFile      string  `yaml:"key_file" default:""`                    // 客户端私钥文件路径（双向认证时使用）
+	ServerName   string  `yaml:"server_name" default:"otel-collector"`   // TLS Server Name（用于证书验证）
 }
 
 // AntiReplayConfig 防重放配置
 type AntiReplayConfig struct {
-	Enabled       bool   `yaml:"enabled" default:"false"`                  // 是否启用防重放（开发环境建议关闭）
-	TimestampTolerance int `yaml:"timestamp_tolerance" default:"300"`      // 时间戳容差（秒），默认5分钟
-	NonceCacheSize  int   `yaml:"nonce_cache_size" default:"10000"`        // Nonce 缓存大小
-	NonceExpireTime int   `yaml:"nonce_expire_time" default:"600"`         // Nonce 过期时间（秒），默认10分钟
+	Secret             string `yaml:"secret" default:""`
+	Enabled            bool   `yaml:"enabled" default:"false"`           // 是否启用防重放（开发环境建议关闭）
+	TimestampTolerance int    `yaml:"timestamp_tolerance" default:"300"` // 时间戳容差（秒），默认5分钟
+	NonceCacheSize     int    `yaml:"nonce_cache_size" default:"10000"`  // Nonce 缓存大小
+	NonceExpireTime    int    `yaml:"nonce_expire_time" default:"600"`   // Nonce 过期时间（秒），默认10分钟
+	FallbackToLocal    bool   `yaml:"fallback_to_local" default:"true"`  // Redis unavailable fallback, disable in production.
 }
 
 // Init 初始化配置
@@ -209,5 +234,25 @@ func Init(configPath string) (*Config, error) {
 		return nil, fmt.Errorf("failed to unmarshal config: %v", err)
 	}
 
+	applyEnvOverrides(&cfg)
+
 	return &cfg, nil
+}
+
+func applyEnvOverrides(cfg *Config) {
+	if v := os.Getenv("GATEWAY_ENVIRONMENT"); v != "" {
+		cfg.Environment = v
+	}
+	if v := os.Getenv("GATEWAY_DB_PASSWORD"); v != "" {
+		cfg.Database.Password = v
+	}
+	if v := os.Getenv("GATEWAY_REDIS_PASSWORD"); v != "" {
+		cfg.Redis.Password = v
+	}
+	if v := os.Getenv("GATEWAY_JWT_SECRET"); v != "" {
+		cfg.JWT.Secret = v
+	}
+	if v := os.Getenv("GATEWAY_ANTI_REPLAY_SECRET"); v != "" {
+		cfg.AntiReplay.Secret = v
+	}
 }

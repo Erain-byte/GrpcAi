@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -11,20 +12,27 @@ import (
 	"time"
 
 	"gateway/internal/config"
+	"gateway/internal/logger"
 
 	"github.com/gin-gonic/gin"
+	"github.com/redis/go-redis/v9"
 )
 
-// NonceCache Nonce 缓存（线程安全）
 type NonceCache struct {
-	cache      map[string]int64 // nonce -> timestamp
+	cache      map[string]int64
 	mu         sync.RWMutex
 	maxSize    int
-	expireTime int64 // 过期时间（秒）
+	expireTime int64
 }
 
-// NewNonceCache 创建 Nonce 缓存
 func NewNonceCache(maxSize int, expireTime int) *NonceCache {
+	if maxSize <= 0 {
+		maxSize = 10000
+	}
+	if expireTime <= 0 {
+		expireTime = 600
+	}
+
 	return &NonceCache{
 		cache:      make(map[string]int64),
 		maxSize:    maxSize,
@@ -32,27 +40,26 @@ func NewNonceCache(maxSize int, expireTime int) *NonceCache {
 	}
 }
 
-// Add 添加 nonce，如果已存在返回 false
 func (nc *NonceCache) Add(nonce string, timestamp int64) bool {
 	nc.mu.Lock()
 	defer nc.mu.Unlock()
 
-	// 检查是否已存在
 	if _, exists := nc.cache[nonce]; exists {
 		return false
 	}
 
-	// 如果缓存已满，清理过期的 nonce
+	now := time.Now().Unix()
 	if len(nc.cache) >= nc.maxSize {
-		nc.cleanup(time.Now().Unix())
+		nc.cleanup(now)
+	}
+	if len(nc.cache) >= nc.maxSize {
+		nc.dropOldest()
 	}
 
-	// 添加新的 nonce
 	nc.cache[nonce] = timestamp
 	return true
 }
 
-// Exists 检查 nonce 是否存在
 func (nc *NonceCache) Exists(nonce string) bool {
 	nc.mu.RLock()
 	defer nc.mu.RUnlock()
@@ -60,7 +67,6 @@ func (nc *NonceCache) Exists(nonce string) bool {
 	return exists
 }
 
-// cleanup 清理过期的 nonce
 func (nc *NonceCache) cleanup(currentTime int64) {
 	for nonce, timestamp := range nc.cache {
 		if currentTime-timestamp > nc.expireTime {
@@ -69,96 +75,146 @@ func (nc *NonceCache) cleanup(currentTime int64) {
 	}
 }
 
-// AntiReplayMiddleware 防重放中间件
-func AntiReplayMiddleware(cfg config.AntiReplayConfig) gin.HandlerFunc {
+func (nc *NonceCache) dropOldest() {
+	var oldestNonce string
+	var oldestTime int64
+	for nonce, timestamp := range nc.cache {
+		if oldestNonce == "" || timestamp < oldestTime {
+			oldestNonce = nonce
+			oldestTime = timestamp
+		}
+	}
+	if oldestNonce != "" {
+		delete(nc.cache, oldestNonce)
+	}
+}
+
+func AntiReplayMiddleware(cfg config.AntiReplayConfig, redisClients ...redis.Cmdable) gin.HandlerFunc {
 	nonceCache := NewNonceCache(cfg.NonceCacheSize, cfg.NonceExpireTime)
+	secret := cfg.Secret
+	var redisClient redis.Cmdable
+	if len(redisClients) > 0 {
+		redisClient = redisClients[0]
+	}
 
 	return func(c *gin.Context) {
-		// 如果未启用，直接跳过
 		if !cfg.Enabled {
 			c.Next()
 			return
 		}
 
-		// 获取请求头中的签名信息
 		timestampStr := c.GetHeader("X-Timestamp")
 		nonce := c.GetHeader("X-Nonce")
 		signature := c.GetHeader("X-Signature")
 
-		// 检查必需的请求头是否存在
 		if timestampStr == "" || nonce == "" || signature == "" {
+			AuditReject(c, "anti_replay", "missing_required_headers", http.StatusBadRequest)
 			c.JSON(http.StatusBadRequest, gin.H{
-				"code":    400,
+				"code":    http.StatusBadRequest,
 				"message": "Missing required headers: X-Timestamp, X-Nonce, X-Signature",
 			})
 			c.Abort()
 			return
 		}
 
-		// 解析时间戳
+		if secret == "" {
+			logger.SugaredLogger.Warn("Anti-replay is enabled but signature secret is empty")
+			AuditReject(c, "anti_replay", "secret_not_configured", http.StatusInternalServerError)
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"code":    http.StatusInternalServerError,
+				"message": "Anti-replay signature secret is not configured",
+			})
+			c.Abort()
+			return
+		}
+
 		timestamp, err := strconv.ParseInt(timestampStr, 10, 64)
 		if err != nil {
+			AuditReject(c, "anti_replay", "invalid_timestamp", http.StatusBadRequest)
 			c.JSON(http.StatusBadRequest, gin.H{
-				"code":    400,
+				"code":    http.StatusBadRequest,
 				"message": "Invalid timestamp format",
 			})
 			c.Abort()
 			return
 		}
 
-		// 验证时间戳是否在允许的时间窗口内
-		currentTime := time.Now().Unix()
-		timeDiff := currentTime - timestamp
-
-		// 检查时间戳是否过期（允许前后浮动）
+		timeDiff := time.Now().Unix() - timestamp
 		if timeDiff < 0 {
 			timeDiff = -timeDiff
 		}
-
 		if timeDiff > int64(cfg.TimestampTolerance) {
+			AuditReject(c, "anti_replay", "timestamp_out_of_window", http.StatusBadRequest)
 			c.JSON(http.StatusBadRequest, gin.H{
-				"code":    400,
+				"code":    http.StatusBadRequest,
 				"message": fmt.Sprintf("Request timestamp expired or too far in the future (tolerance: %d seconds)", cfg.TimestampTolerance),
 			})
 			c.Abort()
 			return
 		}
 
-		// 检查 nonce 是否已被使用（防重放）
-		if !nonceCache.Add(nonce, timestamp) {
+		expectedSignature := GenerateSignature(timestampStr, nonce, secret)
+		if !hmac.Equal([]byte(signature), []byte(expectedSignature)) {
+			AuditReject(c, "anti_replay", "invalid_signature", http.StatusUnauthorized)
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"code":    http.StatusUnauthorized,
+				"message": "Invalid signature",
+			})
+			c.Abort()
+			return
+		}
+
+		ok, err := addNonce(c.Request.Context(), redisClient, nonceCache, nonce, timestamp, cfg.NonceExpireTime, cfg.FallbackToLocal)
+		if err != nil {
+			AuditReject(c, "anti_replay", "nonce_store_unavailable", http.StatusServiceUnavailable)
+			c.JSON(http.StatusServiceUnavailable, gin.H{
+				"code":    http.StatusServiceUnavailable,
+				"message": "Anti-replay nonce store unavailable",
+			})
+			c.Abort()
+			return
+		}
+
+		if !ok {
+			AuditReject(c, "anti_replay", "duplicate_nonce", http.StatusConflict)
 			c.JSON(http.StatusConflict, gin.H{
-				"code":    409,
+				"code":    http.StatusConflict,
 				"message": "Duplicate request detected (nonce already used)",
 			})
 			c.Abort()
 			return
 		}
 
-		// 验证签名（可选，如果配置了密钥）
-		// TODO: 如果需要签名验证，在这里实现
-		// expectedSignature := generateSignature(timestampStr, nonce, secretKey)
-		// if signature != expectedSignature {
-		//     c.JSON(http.StatusUnauthorized, gin.H{
-		//         "code":    401,
-		//         "message": "Invalid signature",
-		//     })
-		//     c.Abort()
-		//     return
-		// }
-
 		c.Next()
 	}
 }
 
-// GenerateSignature 生成 HMAC-SHA256 签名（供客户端使用）
-func GenerateSignature(timestamp string, nonce string, secretKey string) string {
-	// 构造签名字符串
-	message := fmt.Sprintf("%s:%s", timestamp, nonce)
+func addNonce(ctx context.Context, redisClient redis.Cmdable, fallback *NonceCache, nonce string, timestamp int64, expireSeconds int, fallbackToLocal bool) (bool, error) {
+	if redisClient == nil {
+		return fallback.Add(nonce, timestamp), nil
+	}
 
-	// 创建 HMAC-SHA256
+	if expireSeconds <= 0 {
+		expireSeconds = 600
+	}
+
+	key := "gateway:anti_replay:nonce:" + nonce
+	ok, err := redisClient.SetNX(ctx, key, timestamp, time.Duration(expireSeconds)*time.Second).Result()
+	if err == nil {
+		return ok, nil
+	}
+
+	if !fallbackToLocal {
+		return false, err
+	}
+
+	logger.SugaredLogger.Warnf("Redis anti-replay nonce write failed, falling back to local cache: %v", err)
+	return fallback.Add(nonce, timestamp), nil
+}
+
+func GenerateSignature(timestamp string, nonce string, secretKey string) string {
+	message := fmt.Sprintf("%s:%s", timestamp, nonce)
 	h := hmac.New(sha256.New, []byte(secretKey))
 	h.Write([]byte(message))
-
-	// 返回十六进制编码的签名
 	return hex.EncodeToString(h.Sum(nil))
 }

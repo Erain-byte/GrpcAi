@@ -1,23 +1,28 @@
 package middleware
 
 import (
+	"net/http"
+
 	"gateway/internal/logger"
 	"gateway/internal/tracer"
 
 	"github.com/gin-gonic/gin"
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 )
 
-// TracingMiddleware 链路追踪中间件
 func TracingMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// 从请求头提取 Trace Context（如果有）
-		ctx := c.Request.Context()
+		ctx := otel.GetTextMapPropagator().Extract(
+			c.Request.Context(),
+			propagation.HeaderCarrier(c.Request.Header),
+		)
 
-		// 创建 Span
 		spanName := c.Request.Method + " " + c.FullPath()
-		if spanName == "" {
+		if c.FullPath() == "" {
 			spanName = c.Request.Method + " " + c.Request.URL.Path
 		}
 
@@ -33,32 +38,23 @@ func TracingMiddleware() gin.HandlerFunc {
 		)
 		defer span.End()
 
-		// 将 context 和 span 注入到 Gin Context
 		c.Request = c.Request.WithContext(ctx)
 		c.Set("span", span)
 
-		// 处理请求
 		c.Next()
 
-		// 记录响应状态码
 		statusCode := c.Writer.Status()
-		span.SetAttributes(
-			attribute.Int("http.status_code", statusCode),
-		)
-
-		// 如果有错误，记录到 Span
-		if statusCode >= 500 {
-			span.RecordError(nil)
-			span.SetAttributes(
-				attribute.Bool("error", true),
-			)
+		span.SetAttributes(attribute.Int("http.status_code", statusCode))
+		if statusCode >= http.StatusInternalServerError {
+			span.SetStatus(codes.Error, http.StatusText(statusCode))
 		}
 
-		// 添加 Trace ID 到响应头（便于前端关联日志）
 		traceID := span.SpanContext().TraceID().String()
-		c.Header("X-Trace-ID", traceID)
-
-		// 记录 Trace ID 到日志
-		logger.SugaredLogger.Debugf("Request traced [trace_id=%s]", traceID)
+		if span.SpanContext().IsValid() {
+			c.Header("X-Trace-ID", traceID)
+			if logger.SugaredLogger != nil {
+				logger.SugaredLogger.Debugf("Request traced [trace_id=%s]", traceID)
+			}
+		}
 	}
 }

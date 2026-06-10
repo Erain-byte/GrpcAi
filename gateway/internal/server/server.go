@@ -29,14 +29,20 @@ func NewServer(svcCtx *svc.ServiceContext) *Server {
 	engine := gin.New()
 
 	// 注册中间件（顺序很重要！）
-	engine.Use(middleware.Recovery())                              // 1. 异常恢复
-	engine.Use(middleware.TracingMiddleware())                     // 2. ⭐ 链路追踪（在日志之前，记录完整请求链）
-	engine.Use(middleware.LoggerMiddleware())                      // 3. 结构化日志记录
-	engine.Use(middleware.CORS(svcCtx.Config.Service.CORS))       // 4. CORS 跨域
-	engine.Use(middleware.AntiReplayMiddleware(svcCtx.Config.AntiReplay)) // 5. 防重放（在限流之前）
-	engine.Use(middleware.RateLimitMiddleware(svcCtx.Config.RateLimit)) // 6. 限流（在 JWT 之前，防止未认证请求消耗资源）
+	engine.Use(middleware.Recovery())          // 1. 异常恢复
+	engine.Use(middleware.TracingMiddleware()) // 2. ⭐ 链路追踪（在日志之前，记录完整请求链）
+	engine.Use(middleware.LoggerMiddleware())  // 3. 结构化日志记录
+	if svcCtx.Config.Service.CorsEnabled {
+		engine.Use(middleware.CORS(svcCtx.Config.Service.CORS)) // 4. CORS 跨域
+	}
+	antiReplayCfg := svcCtx.Config.AntiReplay
+	if antiReplayCfg.Secret == "" {
+		antiReplayCfg.Secret = svcCtx.Config.JWT.Secret
+	}
+	engine.Use(middleware.AntiReplayMiddleware(antiReplayCfg, svcCtx.Redis))            // 5. 防重放（在限流之前）
+	engine.Use(middleware.RateLimitMiddleware(svcCtx.Config.RateLimit, svcCtx.Redis))   // 6. 限流（在 JWT 之前，防止未认证请求消耗资源）
 	engine.Use(middleware.JWTAuth(svcCtx.Config.JWT, svcCtx.Config.Service.PublicAPIs)) // 7. JWT 认证
-	engine.Use(middleware.CircuitBreakerMiddleware(svcCtx.Config.CircuitBreaker)) // 8. 熔断（在 JWT 之后，保护后端服务）
+	engine.Use(middleware.CircuitBreakerMiddleware(svcCtx.Config.CircuitBreaker))       // 8. 熔断（在 JWT 之后，保护后端服务）
 
 	server := &Server{
 		engine: engine,
@@ -56,7 +62,9 @@ func (s *Server) registerRoutes() {
 
 	// 动态路由注册
 	for _, route := range s.svcCtx.Config.Routes {
-		s.engine.Any(route.Path+"/*path", s.createProxyHandler(route))
+		handler := s.createProxyHandler(route)
+		s.engine.Any(route.Path, handler)
+		s.engine.Any(route.Path+"/*path", handler)
 	}
 }
 
@@ -153,6 +161,10 @@ func (s *Server) getServiceURL(serviceName string) string {
 		log.Printf("Failed to discover service %s from Consul: %v", serviceName, err)
 		return ""
 	}
+	if len(entries) == 0 {
+		log.Printf("No healthy instances found for service: %s", serviceName)
+		return ""
+	}
 
 	// Round-Robin 负载均衡
 	idx := atomic.AddUint64(&rrCounter, 1) % uint64(len(entries))
@@ -165,16 +177,33 @@ func (s *Server) getServiceURL(serviceName string) string {
 			scheme = v
 		}
 	}
-	
+
 	return fmt.Sprintf("%s://%s:%d", scheme, entry.Service.Address, entry.Service.Port)
 }
 
 // healthCheck 健康检查处理器
 func (s *Server) healthCheck(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{
-		"status":  "healthy",
+	status := http.StatusOK
+	overallStatus := "healthy"
+	redisStatus := "healthy"
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
+	if err := s.svcCtx.HealthCheck(ctx); err != nil {
+		redisStatus = err.Error()
+		if s.svcCtx.Config.Redis.HealthRequired || s.svcCtx.Config.IsProduction() {
+			status = http.StatusServiceUnavailable
+			overallStatus = "unhealthy"
+		}
+	}
+	cancel()
+
+	c.JSON(status, gin.H{
+		"status":  overallStatus,
 		"service": s.svcCtx.Config.Name,
 		"version": s.svcCtx.Config.Service.Version,
+		"env":     s.svcCtx.Config.Environment,
+		"checks": gin.H{
+			"redis": redisStatus,
+		},
 	})
 }
 

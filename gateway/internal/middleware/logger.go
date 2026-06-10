@@ -9,7 +9,7 @@ import (
 	"go.uber.org/zap"
 )
 
-// LoggerMiddleware 结构化日志中间件
+// LoggerMiddleware 结构化日志中间件（自动关联 Trace ID）
 func LoggerMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// 记录请求开始时间
@@ -35,7 +35,10 @@ func LoggerMiddleware() gin.HandlerFunc {
 			userID = uid
 		}
 
-		// 记录结构化日志
+		// ⭐ 从 request context 中提取 Trace ID
+		traceField := logger.WithTraceID(c.Request.Context())
+
+		// 记录结构化日志（包含 Trace ID）
 		logger.Logger.Info("HTTP Request",
 			zap.String("method", method),
 			zap.String("path", path),
@@ -45,6 +48,7 @@ func LoggerMiddleware() gin.HandlerFunc {
 			zap.String("ip", ip),
 			zap.String("user_agent", userAgent),
 			zap.Any("user_id", userID),
+			traceField, // ⭐ 添加 Trace ID 字段
 		)
 
 		// 如果有错误，记录错误日志
@@ -55,6 +59,7 @@ func LoggerMiddleware() gin.HandlerFunc {
 				zap.Int("status", statusCode),
 				zap.Duration("duration", duration),
 				zap.String("ip", ip),
+				traceField, // ⭐ 添加 Trace ID 字段
 			)
 		} else if statusCode >= 400 {
 			logger.Logger.Warn("HTTP Client Error",
@@ -63,6 +68,7 @@ func LoggerMiddleware() gin.HandlerFunc {
 				zap.Int("status", statusCode),
 				zap.Duration("duration", duration),
 				zap.String("ip", ip),
+				traceField, // ⭐ 添加 Trace ID 字段
 			)
 		}
 	}

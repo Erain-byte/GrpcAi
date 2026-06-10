@@ -53,9 +53,20 @@ func main() {
 		cancel() // 立即释放 context 资源
 	}()
 
-	logger.SugaredLogger.Infof("Gateway Service starting... [version=%s]", cfg.Service.Version)
+	logger.SugaredLogger.Infof("Gateway Service starting... [version=%s, environment=%s]", cfg.Service.Version, cfg.Environment)
 
-	serviceContext := svc.NewServiceContext(*cfg)                 // 创建 redis 和数据库连接等资源
+	serviceContext := svc.NewServiceContext(*cfg) // 创建 redis 和数据库连接等资源
+	healthCtx, healthCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	if err := serviceContext.HealthCheck(healthCtx); err != nil {
+		healthCancel()
+		if cfg.Redis.HealthRequired || cfg.IsProduction() {
+			logger.SugaredLogger.Fatalf("Redis health check failed: %v", err)
+		}
+		logger.SugaredLogger.Warnf("Redis health check failed, continuing because environment is not production: %v", err)
+	} else {
+		healthCancel()
+	}
+
 	consulRegistry, err := registry.NewConsulRegistry(cfg.Consul) // 创建 Consul 注册中心实例
 	if err != nil {
 		logger.SugaredLogger.Fatalf("Failed to create consul registry: %v", err)
@@ -63,7 +74,7 @@ func main() {
 	serviceContext.Registry = consulRegistry // 将 Consul 注册中心添加到服务上下文中，供后续使用
 
 	// ========== HTTP服务 ==========
-	engine := server.NewServer(serviceContext)
+	engine := server.NewServer(serviceContext) //注册HTTP路由和中间件
 	httpAddr := fmt.Sprintf(":%d", cfg.Port)
 	httpSrv := &http.Server{
 		Addr:    httpAddr,
@@ -75,7 +86,7 @@ func main() {
 	// ========== gRPC服务 ==========
 	grpcAddr := fmt.Sprintf(":%d", cfg.GRPCPort)
 	grpcSrv := grpc.NewServer(
-		grpc.UnaryInterceptor(middleware.UnaryServerInterceptor()), // ⭐ 添加服务端追踪拦截器
+		grpc.StatsHandler(middleware.NewServerStatsHandler()), // ⭐ 使用 otelgrpc Stats Handler（推荐）
 	)
 
 	// 创建客户端管理器（带 TLS 配置）
@@ -111,9 +122,6 @@ func main() {
 		logger.SugaredLogger.Infof("  - %s -> %s (strip_path: %v, timeout: %s)", route.Path, route.Service, route.StripPath, route.Timeout)
 	}
 
-	stopKeepAlive := make(chan struct{})
-	go consulRegistry.KeepAlive(cfg.Name, stopKeepAlive)
-
 	// ⭐ 启动证书有效期定期检查（每24小时）
 	if cfg.Grpc.UseTLS {
 		quitCheck := make(chan struct{})
@@ -141,14 +149,15 @@ func main() {
 	<-quit
 	logger.SugaredLogger.Info("Shutting down gateway...")
 
-	close(stopKeepAlive)
-
 	if err := consulRegistry.Deregister(cfg.Name); err != nil {
 		logger.SugaredLogger.Warnf("Failed to deregister service from consul: %v", err)
 	}
 
 	grpcSrv.GracefulStop()
 	grpcClients.Close()
+	if err := serviceContext.Close(); err != nil {
+		logger.SugaredLogger.Warnf("Failed to close service context: %v", err)
+	}
 
 	shutdownTimeout, err := time.ParseDuration(cfg.Shutdown.Timeout)
 	if err != nil {

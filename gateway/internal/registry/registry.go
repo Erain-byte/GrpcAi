@@ -14,10 +14,12 @@ import (
 type ConsulRegistry struct {
 	client *api.Client
 	config config.ConsulConfig
-	
+
 	// 服务发现缓存
-	cacheMu      sync.RWMutex
-	serviceCache map[string]*serviceCacheEntry
+	cacheMu         sync.RWMutex
+	serviceCache    map[string]*serviceCacheEntry
+	watchMu         sync.Mutex
+	watchedServices map[string]struct{}
 }
 
 // serviceCacheEntry 服务缓存条目
@@ -42,9 +44,10 @@ func NewConsulRegistry(cfg config.ConsulConfig) (*ConsulRegistry, error) {
 	}
 
 	return &ConsulRegistry{
-		client:       client,
-		config:       cfg,
-		serviceCache: make(map[string]*serviceCacheEntry),
+		client:          client,
+		config:          cfg,
+		serviceCache:    make(map[string]*serviceCacheEntry),
+		watchedServices: make(map[string]struct{}),
 	}, nil
 }
 
@@ -62,7 +65,6 @@ func (r *ConsulRegistry) Register(name string, host string, httpPort int, grpcPo
 			HTTP:                           fmt.Sprintf("%s://%s:%d/health", r.config.Scheme, host, httpPort),
 			Interval:                       r.config.CheckInterval,
 			Timeout:                        r.config.CheckTimeout,
-			TTL:                            r.config.TTL,
 			TLSSkipVerify:                  true,
 			DeregisterCriticalServiceAfter: r.config.DeregisterCriticalAfter,
 		},
@@ -85,7 +87,6 @@ func (r *ConsulRegistry) Register(name string, host string, httpPort int, grpcPo
 			GRPC:                           fmt.Sprintf("%s:%d", host, grpcPort),
 			Interval:                       r.config.CheckInterval,
 			Timeout:                        r.config.CheckTimeout,
-			TTL:                            r.config.TTL,
 			DeregisterCriticalServiceAfter: r.config.DeregisterCriticalAfter,
 		},
 	}
@@ -139,10 +140,21 @@ func (r *ConsulRegistry) DiscoverService(serviceName string) ([]*api.ServiceEntr
 	// 更新缓存
 	r.updateCache(serviceName, entries, lastIndex)
 
-	// 启动后台 Watch（协程）
-	go r.watchService(serviceName, lastIndex)
+	r.startWatch(serviceName, lastIndex)
 
 	return entries, nil
+}
+
+func (r *ConsulRegistry) startWatch(serviceName string, lastIndex uint64) {
+	r.watchMu.Lock()
+	defer r.watchMu.Unlock()
+
+	if _, ok := r.watchedServices[serviceName]; ok {
+		return
+	}
+
+	r.watchedServices[serviceName] = struct{}{}
+	go r.watchService(serviceName, lastIndex)
 }
 
 // getFromCache 从缓存获取服务实例

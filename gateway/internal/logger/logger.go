@@ -1,11 +1,13 @@
 package logger
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 
 	"gateway/internal/config"
 
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"gopkg.in/natefinch/lumberjack.v2"
@@ -105,4 +107,39 @@ func Sync() error {
 		return Logger.Sync()
 	}
 	return nil
+}
+
+// GetTraceID 从 context 中提取 Trace ID
+func GetTraceID(ctx context.Context) string {
+	span := trace.SpanFromContext(ctx)
+	if span.SpanContext().IsValid() {
+		return span.SpanContext().TraceID().String()
+	}
+	return ""
+}
+
+// WithTraceID 为 zap.Logger 添加 Trace ID 字段
+func WithTraceID(ctx context.Context) zap.Field {
+	traceID := GetTraceID(ctx)
+	if traceID != "" {
+		return zap.String("trace_id", traceID)
+	}
+	return zap.Skip()
+}
+
+// NewContextLogger 创建带 Trace ID 的上下文日志器
+func NewContextLogger(ctx context.Context) *zap.Logger {
+	if Logger == nil {
+		return nil
+	}
+	return Logger.With(WithTraceID(ctx))
+}
+
+// NewContextSugaredLogger 创建带 Trace ID 的糖化日志器
+func NewContextSugaredLogger(ctx context.Context) *zap.SugaredLogger {
+	contextLogger := NewContextLogger(ctx)
+	if contextLogger == nil {
+		return nil
+	}
+	return contextLogger.Sugar()
 }

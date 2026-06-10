@@ -2,29 +2,44 @@ package middleware
 
 import (
 	"fmt"
-	"gateway/internal/config"
-	"log"
 	"net/http"
 	"strings"
 	"time"
 
+	"gateway/internal/config"
+	"gateway/internal/logger"
+
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
+	"go.uber.org/zap"
 )
 
 func JWTAuth(jwtCfg config.JWTConfig, publicAPIs []string) gin.HandlerFunc {
-	secret := []byte(jwtCfg.Secret)
+	secret := strings.TrimSpace(jwtCfg.Secret)
 
 	return func(c *gin.Context) {
 		path := c.Request.URL.Path
-
 		if isPublicAPI(path, publicAPIs) {
 			c.Next()
 			return
 		}
 
+		if secret == "" {
+			if logger.Logger != nil {
+				logger.Logger.Error("JWT secret is not configured", zap.String("path", path))
+			}
+			AuditReject(c, "jwt", "secret_not_configured", http.StatusInternalServerError)
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"code":    http.StatusInternalServerError,
+				"message": "JWT secret is not configured",
+			})
+			c.Abort()
+			return
+		}
+
 		tokenStr := extractToken(c)
 		if tokenStr == "" {
+			AuditReject(c, "jwt", "missing_token", http.StatusUnauthorized)
 			c.JSON(http.StatusUnauthorized, gin.H{
 				"code":    http.StatusUnauthorized,
 				"message": "missing or invalid token",
@@ -33,14 +48,22 @@ func JWTAuth(jwtCfg config.JWTConfig, publicAPIs []string) gin.HandlerFunc {
 			return
 		}
 
-		token, err := jwt.Parse(tokenStr, func(token *jwt.Token) (interface{}, error) {
+		claims := jwt.MapClaims{}
+		token, err := jwt.ParseWithClaims(tokenStr, claims, func(token *jwt.Token) (interface{}, error) {
 			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 			}
-			return secret, nil
-		})
+			return []byte(secret), nil
+		}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}))
 		if err != nil || !token.Valid {
-			log.Printf("JWT validation failed: %v", err)
+			if logger.Logger != nil {
+				logger.Logger.Warn("JWT validation failed",
+					zap.Error(err),
+					zap.String("path", path),
+					zap.String("client_ip", c.ClientIP()),
+				)
+			}
+			AuditReject(c, "jwt", "invalid_token", http.StatusUnauthorized, zap.Error(err))
 			c.JSON(http.StatusUnauthorized, gin.H{
 				"code":    http.StatusUnauthorized,
 				"message": "invalid or expired token",
@@ -49,11 +72,20 @@ func JWTAuth(jwtCfg config.JWTConfig, publicAPIs []string) gin.HandlerFunc {
 			return
 		}
 
-		if claims, ok := token.Claims.(jwt.MapClaims); ok {
-			c.Set("user_id", claims["user_id"])
-			c.Set("username", claims["username"])
-			c.Set("role", claims["role"])
+		exp, err := claims.GetExpirationTime()
+		if err != nil || exp == nil {
+			AuditReject(c, "jwt", "missing_exp_claim", http.StatusUnauthorized, zap.Error(err))
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"code":    http.StatusUnauthorized,
+				"message": "token missing exp claim",
+			})
+			c.Abort()
+			return
 		}
+
+		c.Set("user_id", claims["user_id"])
+		c.Set("username", claims["username"])
+		c.Set("role", claims["role"])
 
 		c.Next()
 	}
@@ -75,19 +107,17 @@ func isPublicAPI(path string, publicAPIs []string) bool {
 }
 
 func extractToken(c *gin.Context) string {
-	auth := c.GetHeader("Authorization")
-	if auth != "" {
-		parts := strings.SplitN(auth, " ", 2)
-		if len(parts) == 2 && strings.EqualFold(parts[0], "bearer") {
-			return strings.TrimSpace(parts[1])
-		}
-		return strings.TrimSpace(auth)
+	auth := strings.TrimSpace(c.GetHeader("Authorization"))
+	if auth == "" {
+		return ""
 	}
 
-	if t := c.Query("token"); t != "" {
-		return t
+	parts := strings.SplitN(auth, " ", 2)
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "bearer") {
+		return ""
 	}
-	return ""
+
+	return strings.TrimSpace(parts[1])
 }
 
 func GenerateToken(jwtCfg config.JWTConfig, userID interface{}, username string, role string) (string, error) {

@@ -2,10 +2,11 @@ package server
 
 import (
 	"context"
+	"io"
 
 	grpcclient "gateway/internal/grpc"
-	pbAi "github.com/Erain-byte/GrpcAi/proto/ai"
 	"gateway/internal/svc"
+	pbAi "github.com/Erain-byte/GrpcAi/proto/ai"
 )
 
 // AiForwarder AI 服务转发器
@@ -41,14 +42,17 @@ func (f *AiForwarder) StreamChat(req *pbAi.StreamChatRequest, stream pbAi.AiServ
 	if err != nil {
 		return err
 	}
-	
+
 	respStream, err := client.StreamChat(stream.Context(), req)
 	if err != nil {
 		return err
 	}
-	
+
 	for {
 		resp, err := respStream.Recv()
+		if err == io.EOF {
+			return nil
+		}
 		if err != nil {
 			return err
 		}

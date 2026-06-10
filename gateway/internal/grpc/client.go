@@ -105,7 +105,7 @@ func (m *ClientManager) GetConn(serviceName string) (*grpc.ClientConn, error) {
 
 	conn, err = grpc.NewClient(addr,
 		grpc.WithTransportCredentials(creds),
-		grpc.WithUnaryInterceptor(middleware.UnaryClientInterceptor()), // ⭐ 添加客户端追踪拦截器
+		grpc.WithStatsHandler(middleware.NewClientStatsHandler()), // ⭐ 添加客户端追踪 Stats Handler
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect gRPC service %s (%s): %v", serviceName, addr, err)

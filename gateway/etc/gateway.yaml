@@ -1,4 +1,5 @@
 # Gateway Service Configuration
+environment: "development" # development, staging, production
 name: "gateway-service"
 host: "localhost"
 port: 8080
@@ -26,6 +27,15 @@ redis:
   password: ""
   db: 0
   pool_size: 100
+  min_idle_conns: 10
+  max_idle_conns: 50
+  conn_max_idle_time: "30m"
+  conn_max_lifetime: "1h"
+  dial_timeout: "5s"
+  read_timeout: "3s"
+  write_timeout: "3s"
+  pool_timeout: "4s"
+  health_required: false # set true in production, or use environment: production
 
 # JWT Configuration
 jwt:
@@ -126,6 +136,7 @@ rate_limit:
   burst_size: 20                    # 令牌桶容量（允许突发流量）
   by_ip: true                       # 按 IP 限流
   by_api: false                     # 按 API 路径限流
+  fallback_to_local: true           # development: true; production: false
 
 # Circuit Breaker Configuration (熔断配置)
 circuit_breaker:
@@ -139,13 +150,20 @@ circuit_breaker:
 tracing:
   enabled: true                     # 是否启用链路追踪
   service_name: "gateway-service"   # 服务名称
-  endpoint: "http://localhost:14268/api/traces"  # Jaeger Collector 地址
+  endpoint: "localhost:4317"        # OTLP gRPC Collector 地址（标准端口 4317）
   sampler_type: "const"             # 采样器类型：const, probabilistic, ratelimiting
   sampler_param: 1.0                # 采样参数（const: 0/1, probabilistic: 0.0-1.0）
+  use_tls: false                    # 是否启用 TLS（生产环境建议启用）
+  ca_file: ""                       # CA 证书文件路径（默认：/etc/certs/gateway/ca.crt）
+  cert_file: ""                     # 客户端证书文件路径（双向认证时使用）
+  key_file: ""                      # 客户端私钥文件路径（双向认证时使用）
+  server_name: "otel-collector"     # TLS Server Name（用于证书验证）
 
 # Anti-Replay Configuration (防重放配置)
 anti_replay:
   enabled: false                    # 是否启用防重放（开发环境建议关闭，生产环境启用）
+  secret: ""                        # HMAC signature secret; use GATEWAY_ANTI_REPLAY_SECRET in production
   timestamp_tolerance: 300          # 时间戳容差（秒），默认5分钟
   nonce_cache_size: 10000           # Nonce 缓存大小
   nonce_expire_time: 600            # Nonce 过期时间（秒），默认10分钟
+  fallback_to_local: true           # development: true; production: false

@@ -681,7 +681,7 @@ Client → Gateway (创建 Span) → User Service (提取 Context，创建子 Sp
 
 **gRPC 请求追踪流程**：
 ```
-Gateway (UnaryServerInterceptor) → User Service (UnaryClientInterceptor)
+Gateway (otelgrpc server StatsHandler) → User Service (otelgrpc client StatsHandler)
          ↓                                ↓
     提取 Metadata                    注入 Metadata
     创建 Server Span                 创建 Client Span

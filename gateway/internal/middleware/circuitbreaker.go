@@ -3,6 +3,7 @@ package middleware
 import (
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	"gateway/internal/config"
@@ -11,7 +12,6 @@ import (
 	"github.com/sony/gobreaker"
 )
 
-// CircuitBreakerMiddleware 熔断器中间件
 func CircuitBreakerMiddleware(cfg config.CircuitBreakerConfig) gin.HandlerFunc {
 	if !cfg.Enabled {
 		return func(c *gin.Context) {
@@ -19,78 +19,95 @@ func CircuitBreakerMiddleware(cfg config.CircuitBreakerConfig) gin.HandlerFunc {
 		}
 	}
 
-	// 解析超时时间
 	timeout, err := time.ParseDuration(cfg.Timeout)
-	if err != nil {
-		timeout = 30 * time.Second // 默认 30 秒
+	if err != nil || timeout <= 0 {
+		timeout = 30 * time.Second
 	}
 
 	interval, err := time.ParseDuration(cfg.Interval)
-	if err != nil {
-		interval = 60 * time.Second // 默认 60 秒
+	if err != nil || interval <= 0 {
+		interval = 60 * time.Second
 	}
 
-	// 创建熔断器
-	cb := gobreaker.NewCircuitBreaker(gobreaker.Settings{
-		Name:        "gateway-circuit-breaker",
-		MaxRequests: cfg.MinRequests,      // 半开状态允许的最大请求数
-		Interval:    interval,             // 统计窗口时间
-		Timeout:     timeout,              // 熔断器打开后的等待时间
-		ReadyToTrip: func(counts gobreaker.Counts) bool {
-			// 当失败次数超过阈值时，触发熔断
-			return counts.ConsecutiveFailures > cfg.MaxFailures
+	if cfg.MaxFailures == 0 {
+		cfg.MaxFailures = 5
+	}
+	if cfg.MinRequests == 0 {
+		cfg.MinRequests = 1
+	}
+
+	breakers := &httpCircuitBreakers{
+		breakers: make(map[string]*gobreaker.CircuitBreaker),
+		settings: gobreaker.Settings{
+			MaxRequests: cfg.MinRequests,
+			Interval:    interval,
+			Timeout:     timeout,
+			ReadyToTrip: func(counts gobreaker.Counts) bool {
+				return counts.ConsecutiveFailures >= cfg.MaxFailures
+			},
 		},
-		OnStateChange: func(name string, from gobreaker.State, to gobreaker.State) {
-			// 状态变化时的回调（可用于监控告警）
-			switch to {
-			case gobreaker.StateOpen:
-				// 熔断器打开，拒绝所有请求
-			case gobreaker.StateHalfOpen:
-				// 进入半开状态，允许少量请求探测
-			case gobreaker.StateClosed:
-				// 熔断器关闭，恢复正常
-			}
-		},
-	})
+	}
 
 	return func(c *gin.Context) {
-		// 执行受保护的请求
-		result, err := cb.Execute(func() (interface{}, error) {
+		cb := breakers.Get(c.FullPath(), c.Request.URL.Path)
+
+		_, err := cb.Execute(func() (interface{}, error) {
 			c.Next()
-			
-			// 检查是否有错误（状态码 >= 500）
 			if c.Writer.Status() >= http.StatusInternalServerError {
 				return nil, fmt.Errorf("backend service error: %d", c.Writer.Status())
 			}
-			
 			return nil, nil
 		})
 
-		// 如果熔断器处于 Open 状态，返回 503
-		if err != nil {
-			if err == gobreaker.ErrOpenState {
-				c.JSON(http.StatusServiceUnavailable, gin.H{
-					"code":    http.StatusServiceUnavailable,
-					"message": "Service temporarily unavailable, circuit breaker is open",
-				})
-				c.Abort()
-				return
-			}
-			
-			// 其他错误，记录但不中断（由后续中间件处理）
+		if err == gobreaker.ErrOpenState {
+			AuditReject(c, "circuit_breaker", "open_state", http.StatusServiceUnavailable)
+			c.JSON(http.StatusServiceUnavailable, gin.H{
+				"code":    http.StatusServiceUnavailable,
+				"message": "Service temporarily unavailable, circuit breaker is open",
+			})
+			c.Abort()
 		}
-		
-		_ = result // 使用结果避免未使用警告
 	}
 }
 
-// PerServiceCircuitBreaker 按服务划分的熔断器（用于 gRPC 转发）
+type httpCircuitBreakers struct {
+	mu       sync.RWMutex
+	breakers map[string]*gobreaker.CircuitBreaker
+	settings gobreaker.Settings
+}
+
+func (h *httpCircuitBreakers) Get(routePattern string, path string) *gobreaker.CircuitBreaker {
+	key := routePattern
+	if key == "" {
+		key = path
+	}
+
+	h.mu.RLock()
+	breaker, ok := h.breakers[key]
+	h.mu.RUnlock()
+	if ok {
+		return breaker
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if breaker, ok = h.breakers[key]; ok {
+		return breaker
+	}
+
+	settings := h.settings
+	settings.Name = key
+	breaker = gobreaker.NewCircuitBreaker(settings)
+	h.breakers[key] = breaker
+	return breaker
+}
+
 type PerServiceCircuitBreaker struct {
+	mu       sync.Mutex
 	breakers map[string]*gobreaker.CircuitBreaker
 	cfg      config.CircuitBreakerConfig
 }
 
-// NewPerServiceCircuitBreaker 创建按服务的熔断器
 func NewPerServiceCircuitBreaker(cfg config.CircuitBreakerConfig) *PerServiceCircuitBreaker {
 	return &PerServiceCircuitBreaker{
 		breakers: make(map[string]*gobreaker.CircuitBreaker),
@@ -98,29 +115,40 @@ func NewPerServiceCircuitBreaker(cfg config.CircuitBreakerConfig) *PerServiceCir
 	}
 }
 
-// GetBreaker 获取或创建指定服务的熔断器
 func (pscb *PerServiceCircuitBreaker) GetBreaker(serviceName string) *gobreaker.CircuitBreaker {
+	pscb.mu.Lock()
+	defer pscb.mu.Unlock()
+
 	if breaker, exists := pscb.breakers[serviceName]; exists {
 		return breaker
 	}
 
 	timeout, _ := time.ParseDuration(pscb.cfg.Timeout)
-	if timeout == 0 {
+	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
 
 	interval, _ := time.ParseDuration(pscb.cfg.Interval)
-	if interval == 0 {
+	if interval <= 0 {
 		interval = 60 * time.Second
+	}
+
+	maxFailures := pscb.cfg.MaxFailures
+	if maxFailures == 0 {
+		maxFailures = 5
+	}
+	minRequests := pscb.cfg.MinRequests
+	if minRequests == 0 {
+		minRequests = 1
 	}
 
 	breaker := gobreaker.NewCircuitBreaker(gobreaker.Settings{
 		Name:        serviceName,
-		MaxRequests: pscb.cfg.MinRequests,
+		MaxRequests: minRequests,
 		Interval:    interval,
 		Timeout:     timeout,
 		ReadyToTrip: func(counts gobreaker.Counts) bool {
-			return counts.ConsecutiveFailures > pscb.cfg.MaxFailures
+			return counts.ConsecutiveFailures >= maxFailures
 		},
 	})
 
